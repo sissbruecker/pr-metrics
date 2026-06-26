@@ -221,7 +221,7 @@ WHERE repo_id = :repo
 ORDER BY merged_at;
 ```
 
-Per returned row the app derives the **month** (`substr(merged_at,1,7)`) and the **category** (title-prefix rule), then accumulates per bucket.
+The fetched rows first pass through an **exclusion filter** (§7.6) that drops PRs which should not count at all. For each surviving row the app then derives the **month** (`substr(merged_at,1,7)`) and the **category** (title-prefix rule), and accumulates per bucket.
 
 ### 7.2 Window
 
@@ -251,6 +251,15 @@ A configurable threshold drops time-to-merge **outliers** — PRs that sat open 
 - Applied **in app code** after the §7.1 fetch (the query itself is unchanged), in the same pass that buckets and computes the math.
 - The number of PRs excluded in the window is reported alongside the stats (for a footnote, §8.4), as is the threshold actually applied (so the UI control can reflect the configured default).
 - The cap is **always on**: the UI input is a required integer number of days (≥ 1); there is no "show everything" mode.
+
+### 7.6 Exclusion filter
+
+Some merged PRs are noise that should not count toward the stats at all. A **filter pass** runs over the §7.1 fetch results, **before** bucketing and the §7.5 outlier check, and drops the excluded rows.
+
+- **Hard-coded in application code** (like categorization, §6.1) and kept in its own module so rules can be added without touching the stats code. Changing the rules re-filters everything instantly with no re-sync.
+- A PR is excluded if **any** rule matches its `title`. Matching trims whitespace and is **case-insensitive** (§6 conventions).
+- **Current rule — version bumps:** automated dependency-update PRs (Dependabot/Renovate-style) are excluded. They don't reflect real review/merge effort and skew both counts and TTM. Matched titles: `chore: bump …` and the scoped form `chore(deps): bump …` / `chore(deps-dev): bump …`. Deliberately **not** matched: `feat: bump …` (a real feature) and `Revert "chore: Bump …"` (real work).
+- Excluded PRs are dropped silently — they are **not** added to the §7.5 outlier tally, which keeps its meaning (TTM outliers only).
 
 ---
 

@@ -41,6 +41,7 @@
 import type { Database } from "bun:sqlite";
 import { categorize, CATEGORIES, type Category } from "./categorize.ts";
 import { DEFAULT_TTM_THRESHOLD_DAYS } from "./config.ts";
+import { filterRows } from "./filter.ts";
 
 /** Seconds in one day, for converting day-denominated thresholds. */
 export const SECONDS_PER_DAY = 86400;
@@ -315,7 +316,7 @@ export function computeStats(
 ): StatsResult {
   const windowStart = computeWindowStart(now);
   const months = windowMonths(now);
-  const rows = fetchStatsRows(db, repoId, windowStart);
+  const rows = filterRows(fetchStatsRows(db, repoId, windowStart));
   const { monthly, approximateCount, excludedCount } = aggregate(rows, months, thresholdSeconds);
   return {
     windowStart,
