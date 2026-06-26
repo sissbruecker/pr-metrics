@@ -5,3 +5,9 @@ node_modules
 *.sqlite-shm
 *.sqlite-wal
 .env
+
+# Compiled single-file executable (bun run compile)
+/pr-stats
+/dist
+# Transient build shard bun may leave behind on --compile
+*.bun-build

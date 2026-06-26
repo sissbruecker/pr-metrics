@@ -23,21 +23,51 @@
  *     populated. Read-only.
  *
  *   GET /<path>
- *     Serve a static file from the UI assets directory (`src/ui/`). `/` maps to
- *     `index.html`. Returns 404 when the file does not exist. Path traversal
- *     (`..` escaping the UI directory) is rejected with 403. This is where the
- *     vendored Chart.js (`/chart.umd.js`) is served from.
- *
- * `index.html` / `app.js` are produced by a later task; until then `/` simply
- * 404s, but the static-serving machinery and the vendored Chart.js asset work.
+ *     Serve one of a fixed set of embedded UI assets. `/` maps to `index.html`.
+ *     Any path that is not a known asset returns 404. The assets are embedded
+ *     into the module (see `STATIC_ASSETS`) so they are served identically under
+ *     `bun run` and from a `bun build --compile` standalone binary. This is where
+ *     the vendored Chart.js (`/chart.umd.js`) is served from.
  */
 
 import type { Database } from "bun:sqlite";
 import { openDb, type RepoRow } from "./db.ts";
 import { computeStats } from "./stats.ts";
 
-/** Directory holding the static UI assets, resolved relative to this module. */
-const UI_DIR = new URL("./ui/", import.meta.url).pathname;
+// Embed the UI assets into the module. With `with { type: "file" }`, Bun copies
+// each asset into a `--compile` standalone binary AND resolves it on disk under
+// `bun run`; the imported value is a path that `Bun.file(...)` can open in both
+// modes. This is what lets the compiled binary serve the UI with no `src/ui/`
+// directory present on disk.
+import indexHtml from "./ui/index.html" with { type: "file" };
+import stylesCss from "./ui/styles.css" with { type: "file" };
+import chartJs from "./ui/chart.umd.js" with { type: "file" };
+// app.js / format.js are real JS modules on disk, so TypeScript (with allowJs)
+// types them by their source exports rather than as a `type: "file"` string. A
+// namespace import sidesteps that — at runtime the `file` import exposes only a
+// `default` holding the embedded asset's path.
+import * as appJsAsset from "./ui/app.js" with { type: "file" };
+import * as formatJsAsset from "./ui/format.js" with { type: "file" };
+const appJs = (appJsAsset as unknown as { default: string }).default;
+const formatJs = (formatJsAsset as unknown as { default: string }).default;
+
+/**
+ * The static assets the server will serve, keyed by request path. `/` serves
+ * the app shell. Because only these known paths are served, path traversal is
+ * impossible — an unknown path simply 404s.
+ *
+ * Each value is the embedded asset's file path. At runtime Bun gives these
+ * `type: "file"` imports a string path; TypeScript types them as their on-disk
+ * module shape (or `HTMLBundle`), so we coerce to `string` here.
+ */
+const STATIC_ASSETS: Record<string, string> = {
+  "/": indexHtml as unknown as string,
+  "/index.html": indexHtml as unknown as string,
+  "/app.js": appJs,
+  "/format.js": formatJs,
+  "/styles.css": stylesCss as unknown as string,
+  "/chart.umd.js": chartJs as unknown as string,
+};
 
 /** Options for {@link createServer}. */
 export interface CreateServerOptions {
@@ -135,39 +165,24 @@ function handleStats(db: Database, url: URL): Response {
 }
 
 /**
- * Resolve a request pathname to a file under the UI directory, or null if it
- * would escape that directory (path traversal). `/` resolves to `index.html`.
+ * Resolve a request pathname to an embedded asset's file path, or null if no
+ * asset is registered for that path. `/` resolves to `index.html`. Only the
+ * fixed `STATIC_ASSETS` paths resolve, so path traversal cannot occur.
  */
 export function resolveStaticPath(pathname: string): string | null {
-  // Decode percent-encoding (e.g. %2e%2e) before the traversal check.
-  let decoded: string;
-  try {
-    decoded = decodeURIComponent(pathname);
-  } catch {
-    return null;
-  }
-  // Reject any segment that is exactly `..` — the simplest robust guard.
-  const segments = decoded.split("/").filter((s) => s.length > 0);
-  if (segments.some((s) => s === "..")) return null;
-
-  const rel = segments.length === 0 ? "index.html" : segments.join("/");
-  const full = UI_DIR + rel;
-  // Defense in depth: the resolved path must stay within UI_DIR.
-  if (!full.startsWith(UI_DIR)) return null;
-  return full;
+  return STATIC_ASSETS[pathname] ?? null;
 }
 
 /** Handle a static-file request. */
 async function handleStatic(pathname: string): Promise<Response> {
   const filePath = resolveStaticPath(pathname);
   if (filePath === null) {
-    return errorResponse(403, "Forbidden");
-  }
-  const file = Bun.file(filePath);
-  if (!(await file.exists())) {
     return errorResponse(404, "Not found");
   }
-  const contentType = contentTypeFor(filePath);
+  // Use the request path (not the on-disk path) for the content type: under
+  // `--compile`, embedded asset paths may not carry the original extension.
+  const contentType = contentTypeFor(pathname === "/" ? "index.html" : pathname);
+  const file = Bun.file(filePath);
   const headers = contentType ? { "Content-Type": contentType } : undefined;
   return new Response(file, headers ? { headers } : undefined);
 }

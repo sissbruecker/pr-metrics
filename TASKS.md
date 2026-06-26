@@ -116,4 +116,4 @@ Derived from `SPEC.md`. Check off each task as it lands. Section references (§)
 
 ## 13. Distribution
 
-- [ ] Support `bun run`; optionally `bun build --compile` for a single executable (§10).
+- [X] Support `bun run`; optionally `bun build --compile` for a single executable (§10).

@@ -10,6 +10,7 @@
   },
   "scripts": {
     "start": "bun run src/index.ts",
+    "compile": "bun build --compile src/index.ts --outfile pr-stats",
     "typecheck": "tsc --noEmit",
     "test": "bun test"
   },
