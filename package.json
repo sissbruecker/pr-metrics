@@ -1,0 +1,20 @@
+{
+  "name": "pr-stats",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Track time-to-merge of GitHub pull requests across repositories.",
+  "module": "src/index.ts",
+  "type": "module",
+  "bin": {
+    "pr-stats": "src/index.ts"
+  },
+  "scripts": {
+    "start": "bun run src/index.ts",
+    "typecheck": "tsc --noEmit",
+    "test": "bun test"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "typescript": "^5"
+  }
+}
