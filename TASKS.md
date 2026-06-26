@@ -23,13 +23,13 @@ Derived from `SPEC.md`. Check off each task as it lands. Section references (§)
 
 ## 3. GitHub GraphQL client
 
-- [ ] Implement a `fetch`-based POST to `https://api.github.com/graphql` with `Authorization: Bearer`, `User-Agent`, JSON `{ query, variables }` body (§11.1).
-- [ ] Check `json.errors` on every response (errors arrive as `200 OK`), surface them as failures (§11.1).
-- [ ] Build the list query: `search(type: ISSUE, first: 50, after: $cursor)` with `rateLimit { remaining resetAt cost }` and `pageInfo` (§11.2).
-- [ ] Build the search query string: `repo:<owner>/<name> is:pr is:merged merged:>=<cursor> sort:created-asc`; pass values as variables (§11.2, §11.3).
-- [ ] Select all per-PR fields inline: identity, timestamps, `isDraft`/`merged`, branches, size, milestone, commits.totalCount, reviews(first:1), comments.totalCount, labels, assignees, reviewRequests, and the filtered `timelineItems` (§11.3).
-- [ ] Implement pagination loop on `pageInfo.hasNextPage`, passing `endCursor` (§11.2).
-- [ ] Handle the 1000-result search cap: narrow with date ranges (`merged:<start>..<end>`) and page each window for large backfills (§11.2).
+- [X] Implement a `fetch`-based POST to `https://api.github.com/graphql` with `Authorization: Bearer`, `User-Agent`, JSON `{ query, variables }` body (§11.1).
+- [X] Check `json.errors` on every response (errors arrive as `200 OK`), surface them as failures (§11.1).
+- [X] Build the list query: `search(type: ISSUE, first: 50, after: $cursor)` with `rateLimit { remaining resetAt cost }` and `pageInfo` (§11.2).
+- [X] Build the search query string: `repo:<owner>/<name> is:pr is:merged merged:>=<cursor> sort:created-asc`; pass values as variables (§11.2, §11.3).
+- [X] Select all per-PR fields inline: identity, timestamps, `isDraft`/`merged`, branches, size, milestone, commits.totalCount, reviews(first:1), comments.totalCount, labels, assignees, reviewRequests, and the filtered `timelineItems` (§11.3).
+- [X] Implement pagination loop on `pageInfo.hasNextPage`, passing `endCursor` (§11.2).
+- [X] Handle the 1000-result search cap: narrow with date ranges (`merged:<start>..<end>`) and page each window for large backfills (§11.2).
 
 ## 4. Rate-limit handling
 
