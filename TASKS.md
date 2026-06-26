@@ -70,12 +70,12 @@ Derived from `SPEC.md`. Check off each task as it lands. Section references (§)
 
 ## 8. Statistics & aggregation (in-app)
 
-- [ ] Implement the single stats query: `SELECT merged_at, ttm_seconds, ttm_is_approximate, title ... WHERE repo_id = ? AND merged_at >= ? ORDER BY merged_at` (§7.1).
-- [ ] Compute the window start: first day of (current month − 11), ISO UTC text — trailing 12 months including current (§7.2).
-- [ ] Bucket each row by month via `substr(merged_at, 1, 7)` and by derived category (§7.1).
-- [ ] Always represent all 12 months; empty months get count 0 and blank median/mean (§7.2).
-- [ ] Compute per `(month, category)` and per-month **"All"**: count, median TTM, mean TTM (§7.3).
-- [ ] Include approximate-TTM PRs in stats; count how many in the window are approximate for the footnote (§7.4, §8.4).
+- [X] Implement the single stats query: `SELECT merged_at, ttm_seconds, ttm_is_approximate, title ... WHERE repo_id = ? AND merged_at >= ? ORDER BY merged_at` (§7.1).
+- [X] Compute the window start: first day of (current month − 11), ISO UTC text — trailing 12 months including current (§7.2).
+- [X] Bucket each row by month via `substr(merged_at, 1, 7)` and by derived category (§7.1).
+- [X] Always represent all 12 months; empty months get count 0 and blank median/mean (§7.2).
+- [X] Compute per `(month, category)` and per-month **"All"**: count, median TTM, mean TTM (§7.3).
+- [X] Include approximate-TTM PRs in stats; count how many in the window are approximate for the footnote (§7.4, §8.4).
 
 ## 9. Web server (`Bun.serve`)
 
