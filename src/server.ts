@@ -32,7 +32,8 @@
 
 import type { Database } from "bun:sqlite";
 import { openDb, type RepoRow } from "./db.ts";
-import { computeStats } from "./stats.ts";
+import { computeStats, SECONDS_PER_DAY } from "./stats.ts";
+import { DEFAULT_TTM_THRESHOLD_DAYS } from "./config.ts";
 
 // Embed the UI assets into the module. With `with { type: "file" }`, Bun copies
 // each asset into a `--compile` standalone binary AND resolves it on disk under
@@ -79,6 +80,11 @@ export interface CreateServerOptions {
   port?: number;
   /** Hostname to bind. Defaults to Bun's default (all interfaces). */
   hostname?: string;
+  /**
+   * Default TTM outlier threshold in seconds, used when a request omits the
+   * `ttmDays` query param. Defaults to the 7-day default.
+   */
+  ttmThresholdSeconds?: number;
 }
 
 /** A repo plus its stored PR count, as returned by `GET /api/repos`. */
@@ -149,7 +155,7 @@ function findRepo(db: Database, id: number): RepoRow | null {
 }
 
 /** Handle `GET /api/stats`. */
-function handleStats(db: Database, url: URL): Response {
+function handleStats(db: Database, url: URL, defaultThresholdSeconds: number): Response {
   const repoParam = url.searchParams.get("repo");
   if (repoParam === null || repoParam.trim() === "") {
     return errorResponse(400, "Missing required query parameter: repo");
@@ -161,7 +167,19 @@ function handleStats(db: Database, url: URL): Response {
   if (findRepo(db, repoId) === null) {
     return errorResponse(404, `Unknown repo id: ${repoId}`);
   }
-  return json(computeStats(db, repoId));
+
+  // Optional TTM outlier threshold, in days. Absent → use the server default.
+  let thresholdSeconds = defaultThresholdSeconds;
+  const ttmDaysParam = url.searchParams.get("ttmDays");
+  if (ttmDaysParam !== null) {
+    const ttmDays = Number(ttmDaysParam);
+    if (!Number.isInteger(ttmDays) || ttmDays < 1) {
+      return errorResponse(400, `Invalid ttmDays: ${ttmDaysParam}. Expected an integer >= 1.`);
+    }
+    thresholdSeconds = ttmDays * SECONDS_PER_DAY;
+  }
+
+  return json(computeStats(db, repoId, undefined, thresholdSeconds));
 }
 
 /**
@@ -193,6 +211,7 @@ async function handleStatic(pathname: string): Promise<Response> {
  */
 export function createFetchHandler(
   db: Database,
+  defaultThresholdSeconds: number = DEFAULT_TTM_THRESHOLD_DAYS * SECONDS_PER_DAY,
 ): (req: Request) => Promise<Response> {
   return async (req: Request): Promise<Response> => {
     const url = new URL(req.url);
@@ -206,7 +225,7 @@ export function createFetchHandler(
 
     switch (url.pathname) {
       case "/api/stats":
-        return handleStats(db, url);
+        return handleStats(db, url, defaultThresholdSeconds);
       case "/api/repos":
         return json(listRepos(db));
       default:
@@ -226,7 +245,7 @@ export function createServer(
   options: CreateServerOptions,
 ): ReturnType<typeof Bun.serve> {
   const db = options.db ?? openDb(options.dbPath ?? ":memory:");
-  const handler = createFetchHandler(db);
+  const handler = createFetchHandler(db, options.ttmThresholdSeconds);
   return Bun.serve({
     port: options.port ?? 3000,
     hostname: options.hostname,

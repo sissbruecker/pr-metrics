@@ -22,6 +22,10 @@ Configured entirely through environment variables:
 - `GITHUB_TOKEN` — GitHub API token used by `sync` (alias: `PR_STATS_GITHUB_TOKEN`).
   Only the `sync` command needs it.
 - `PR_STATS_DB` — path to the SQLite database file (default: `pr-stats.sqlite`).
+- `PR_STATS_TTM_THRESHOLD_DAYS` — default time-to-merge outlier cap, in days
+  (default: `7`). PRs whose time-to-merge exceeds this are excluded from the
+  stats. The web UI can override it per session; this variable only sets the
+  default. Ignored unless it parses to a number ≥ 1.
 
 You can place these in a `.env` file at the project root (it is gitignored).
 
@@ -66,6 +70,13 @@ Use a specific database file by setting `PR_STATS_DB`:
 
 ```sh
 PR_STATS_DB=./my-stats.sqlite bun run src/index.ts list
+```
+
+Change the default time-to-merge outlier cap for the UI by setting
+`PR_STATS_TTM_THRESHOLD_DAYS` (the UI can still override it per session):
+
+```sh
+PR_STATS_TTM_THRESHOLD_DAYS=14 bun run src/index.ts serve
 ```
 
 ## Build a single executable

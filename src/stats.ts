@@ -40,6 +40,10 @@
 
 import type { Database } from "bun:sqlite";
 import { categorize, CATEGORIES, type Category } from "./categorize.ts";
+import { DEFAULT_TTM_THRESHOLD_DAYS } from "./config.ts";
+
+/** Seconds in one day, for converting day-denominated thresholds. */
+export const SECONDS_PER_DAY = 86400;
 
 /** The subset of PR columns the aggregation needs. */
 export interface StatsRow {
@@ -88,6 +92,14 @@ export interface StatsResult {
   monthly: MonthStats[];
   /** Total number of approximate-TTM PRs in the window (for a footnote). */
   approximateCount: number;
+  /**
+   * Number of PRs in the window dropped as outliers because their `ttm_seconds`
+   * exceeded `ttmThresholdSeconds` (for a footnote). Excluded PRs count toward
+   * neither `count` nor median/mean nor `approximateCount`.
+   */
+  excludedCount: number;
+  /** The TTM outlier threshold actually applied, in seconds. */
+  ttmThresholdSeconds: number;
 }
 
 /**
@@ -166,15 +178,26 @@ function emptyByCategory(): Record<Category, BucketStats> {
  * category in `CATEGORIES` per month (empty → count 0, null median/mean). Also
  * returns the total count of approximate-TTM rows.
  *
+ * Rows whose `ttm_seconds` exceeds `thresholdSeconds` are treated as outliers
+ * and dropped entirely — they contribute to neither `count` nor median/mean nor
+ * `approximateCount`, but are tallied in `excludedCount`. Rows with a null
+ * `ttm_seconds` have no TTM to exceed the threshold and are never excluded.
+ * `thresholdSeconds` defaults to `Infinity` (no filtering).
+ *
  * The "All" total is computed over ALL rows merged that month regardless of
  * category — it is NOT the sum of the per-category medians.
  *
  * Rows whose month falls outside `months` are ignored (defensive — the query
  * already filters by the window start).
  */
-export function aggregate(rows: StatsRow[], months: string[]): {
+export function aggregate(
+  rows: StatsRow[],
+  months: string[],
+  thresholdSeconds: number = Infinity,
+): {
   monthly: MonthStats[];
   approximateCount: number;
+  excludedCount: number;
 } {
   const monthSet = new Set(months);
 
@@ -197,12 +220,20 @@ export function aggregate(rows: StatsRow[], months: string[]): {
   };
 
   let approximateCount = 0;
+  let excludedCount = 0;
 
   for (const row of rows) {
-    if (row.ttm_is_approximate === 1) approximateCount += 1;
-
     const month = row.merged_at.slice(0, 7);
     if (!monthSet.has(month)) continue;
+
+    // Drop outliers entirely: a too-large TTM contributes to nothing but the
+    // excluded tally. A null TTM has nothing to compare and is never excluded.
+    if (row.ttm_seconds !== null && row.ttm_seconds > thresholdSeconds) {
+      excludedCount += 1;
+      continue;
+    }
+
+    if (row.ttm_is_approximate === 1) approximateCount += 1;
 
     let acc = accByMonth.get(month);
     if (!acc) {
@@ -248,7 +279,7 @@ export function aggregate(rows: StatsRow[], months: string[]): {
     };
   });
 
-  return { monthly, approximateCount };
+  return { monthly, approximateCount, excludedCount };
 }
 
 /**
@@ -273,22 +304,26 @@ export function fetchStatsRows(
 /**
  * Top-level entry point: compute the window, fetch the rows, and aggregate.
  * `now` is injected for deterministic windows in tests; defaults to the current
- * time.
+ * time. `thresholdSeconds` is the TTM outlier cap (PRs above it are excluded);
+ * it defaults to the 7-day default and is overridden per request by the server.
  */
 export function computeStats(
   db: Database,
   repoId: number,
   now: Date = new Date(),
+  thresholdSeconds: number = DEFAULT_TTM_THRESHOLD_DAYS * SECONDS_PER_DAY,
 ): StatsResult {
   const windowStart = computeWindowStart(now);
   const months = windowMonths(now);
   const rows = fetchStatsRows(db, repoId, windowStart);
-  const { monthly, approximateCount } = aggregate(rows, months);
+  const { monthly, approximateCount, excludedCount } = aggregate(rows, months, thresholdSeconds);
   return {
     windowStart,
     months,
     categories: [...CATEGORIES],
     monthly,
     approximateCount,
+    excludedCount,
+    ttmThresholdSeconds: thresholdSeconds,
   };
 }

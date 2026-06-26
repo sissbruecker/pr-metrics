@@ -52,8 +52,10 @@ Options:
   -h, --help   Show this help
 
 Environment:
-  GITHUB_TOKEN   GitHub API token (or PR_STATS_GITHUB_TOKEN)
-  PR_STATS_DB    Path to the SQLite DB file (default: pr-stats.sqlite)
+  GITHUB_TOKEN                  GitHub API token (or PR_STATS_GITHUB_TOKEN)
+  PR_STATS_DB                   Path to the SQLite DB file (default: pr-stats.sqlite)
+  PR_STATS_TTM_THRESHOLD_DAYS   Default time-to-merge outlier cap in days; PRs above
+                                it are excluded from stats (default: 7)
 `;
 
 function printUsage(): void {
@@ -316,7 +318,12 @@ async function cmdServe(argv: string[], config: Config): Promise<number> {
   }
 
   const db = openDb(config.dbPath);
-  const server = createServer({ db, port, hostname: values.hostname });
+  const server = createServer({
+    db,
+    port,
+    hostname: values.hostname,
+    ttmThresholdSeconds: config.ttmThresholdDays * 86400,
+  });
   console.log(`pr-stats UI listening on ${server.url.href}`);
   console.log("Press Ctrl+C to stop.");
 

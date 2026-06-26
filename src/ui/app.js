@@ -27,6 +27,7 @@
 import { formatDuration, BLANK } from "/format.js";
 
 const SECONDS_PER_HOUR = 3600;
+const SECONDS_PER_DAY = 86400;
 
 // ---- Module state -----------------------------------------------------------
 
@@ -38,6 +39,12 @@ let categoryMetric = "median";
 let currentStats = null;
 /** The single Chart.js instance, created lazily. */
 let chart = null;
+/**
+ * Last valid TTM threshold (in days) the UI sent to the server. Seeded from the
+ * server's configured default on first load, then updated as the user edits the
+ * input; used to revert when the input holds an invalid value.
+ */
+let lastThresholdDays = 7;
 
 // ---- DOM refs ---------------------------------------------------------------
 
@@ -47,6 +54,7 @@ const els = {
   viewToggle: document.getElementById("view-toggle"),
   metricControl: document.getElementById("metric-control"),
   metricSelect: document.getElementById("metric-select"),
+  ttmThreshold: document.getElementById("ttm-threshold"),
   emptyMessage: document.getElementById("empty-message"),
   report: document.getElementById("report"),
   canvas: document.getElementById("chart"),
@@ -272,16 +280,44 @@ function render() {
     renderCategoryChart(currentStats, categoryMetric);
   }
 
+  const ex = currentStats.excludedCount;
+  const days = currentStats.ttmThresholdSeconds / SECONDS_PER_DAY;
+  const exPr = ex === 1 ? "PR was" : "PRs were";
+  const dayLabel = days === 1 ? "day" : "days";
+  const exclusion =
+    `${ex} ${exPr} excluded as outliers (time-to-merge over ${days} ${dayLabel}).`;
+
   const n = currentStats.approximateCount;
   const pr = n === 1 ? "PR has" : "PRs have";
-  els.footnote.textContent =
+  const approximate =
     `${n} ${pr} an approximate time-to-merge in this 12-month window.`;
+
+  els.footnote.textContent = `${exclusion} ${approximate}`;
 }
 
 // ---- Data fetching ----------------------------------------------------------
 
-async function loadStats(repoId) {
-  const res = await fetch(`/api/stats?repo=${encodeURIComponent(repoId)}`);
+/**
+ * Read the TTM threshold input as a positive integer number of days. Invalid or
+ * out-of-range input reverts to the last valid value (and the input is reset to
+ * match), so a fetch is never made with a bad threshold.
+ */
+function currentThresholdDays() {
+  const days = Number(els.ttmThreshold.value);
+  if (!Number.isInteger(days) || days < 1) {
+    els.ttmThreshold.value = String(lastThresholdDays);
+    return lastThresholdDays;
+  }
+  lastThresholdDays = days;
+  return days;
+}
+
+async function loadStats(repoId, days) {
+  let url = `/api/stats?repo=${encodeURIComponent(repoId)}`;
+  if (days !== undefined) {
+    url += `&ttmDays=${encodeURIComponent(days)}`;
+  }
+  const res = await fetch(url);
   if (!res.ok) {
     throw new Error(`Failed to load stats (HTTP ${res.status})`);
   }
@@ -317,7 +353,11 @@ async function init() {
 
   // Wire up controls.
   els.repoSelect.addEventListener("change", () => {
-    loadStats(els.repoSelect.value);
+    loadStats(els.repoSelect.value, currentThresholdDays());
+  });
+
+  els.ttmThreshold.addEventListener("change", () => {
+    loadStats(els.repoSelect.value, currentThresholdDays());
   });
 
   els.viewToggle.addEventListener("click", (e) => {
@@ -335,8 +375,14 @@ async function init() {
     render();
   });
 
-  // Initial load for the auto-selected first repo.
+  // Initial load for the auto-selected first repo. Omit the threshold so the
+  // server applies its configured default, then reflect that default in the
+  // input (it may have been overridden via env var).
   await loadStats(repos[0].id);
+  if (currentStats) {
+    lastThresholdDays = currentStats.ttmThresholdSeconds / SECONDS_PER_DAY;
+    els.ttmThreshold.value = String(lastThresholdDays);
+  }
 }
 
 init();

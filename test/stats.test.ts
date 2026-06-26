@@ -160,6 +160,33 @@ describe("aggregate", () => {
       expect(m.all.count).toBe(0);
     }
   });
+
+  test("rows above the threshold are excluded entirely; a row at the threshold is kept", () => {
+    const rows: StatsRow[] = [
+      row({ ttm_seconds: 10, title: "fix: a" }),
+      row({ ttm_seconds: 100, title: "fix: b" }), // exactly at threshold → kept
+      row({ ttm_seconds: 101, title: "fix: c", ttm_is_approximate: 1 }), // over → excluded
+    ];
+    const { monthly, excludedCount, approximateCount } = aggregate(rows, months, 100);
+    const june = monthly.find((m) => m.month === "2026-06")!;
+    expect(june.byCategory.Fix.count).toBe(2);
+    expect(june.byCategory.Fix.median).toBe(55); // median(10, 100)
+    expect(june.byCategory.Fix.mean).toBe(55);
+    expect(excludedCount).toBe(1);
+    // The excluded outlier contributes to neither count nor the approximate tally.
+    expect(approximateCount).toBe(0);
+  });
+
+  test("null ttm_seconds is never excluded by the threshold", () => {
+    const rows: StatsRow[] = [
+      row({ ttm_seconds: null, title: "fix: a" }),
+      row({ ttm_seconds: 1000, title: "fix: b" }), // over threshold → excluded
+    ];
+    const { monthly, excludedCount } = aggregate(rows, months, 100);
+    const june = monthly.find((m) => m.month === "2026-06")!;
+    expect(june.byCategory.Fix.count).toBe(1); // null kept, 1000 excluded
+    expect(excludedCount).toBe(1);
+  });
 });
 
 describe("fetchStatsRows + computeStats (in-memory DB)", () => {
@@ -213,6 +240,33 @@ describe("fetchStatsRows + computeStats (in-memory DB)", () => {
     expect(june.byCategory.Feature.count).toBe(2);
     expect(june.byCategory.Feature.median).toBe(300);
     expect(result.approximateCount).toBe(1);
+    db.close();
+  });
+
+  test("computeStats applies the default 7-day threshold and reports excludedCount", () => {
+    const db = openDb(":memory:");
+    const repoId = seedRepo(db);
+    insertPr(db, repoId, 1, "2026-06-10T00:00:00Z", 3600, "feat: normal");
+    insertPr(db, repoId, 2, "2026-06-12T00:00:00Z", 30 * 86400, "feat: outlier");
+    const result = computeStats(db, repoId, new Date("2026-06-26T00:00:00Z"));
+    expect(result.ttmThresholdSeconds).toBe(7 * 86400);
+    expect(result.excludedCount).toBe(1);
+    const june = result.monthly.find((m) => m.month === "2026-06")!;
+    expect(june.byCategory.Feature.count).toBe(1); // outlier dropped
+    expect(june.byCategory.Feature.median).toBe(3600);
+    db.close();
+  });
+
+  test("computeStats honors an explicit threshold argument", () => {
+    const db = openDb(":memory:");
+    const repoId = seedRepo(db);
+    insertPr(db, repoId, 1, "2026-06-10T00:00:00Z", 3600, "feat: normal");
+    insertPr(db, repoId, 2, "2026-06-12T00:00:00Z", 30 * 86400, "feat: outlier");
+    const result = computeStats(db, repoId, new Date("2026-06-26T00:00:00Z"), 60 * 86400);
+    expect(result.ttmThresholdSeconds).toBe(60 * 86400);
+    expect(result.excludedCount).toBe(0);
+    const june = result.monthly.find((m) => m.month === "2026-06")!;
+    expect(june.byCategory.Feature.count).toBe(2);
     db.close();
   });
 });

@@ -240,7 +240,17 @@ For each `(month, category)` group, and for the per-month **"All"** total across
 
 ### 7.4 Approximate values
 
-- PRs flagged `ttm_is_approximate` (§3.2) are **included** in the stats. The UI footnotes how many PRs in the window were approximate.
+- PRs flagged `ttm_is_approximate` (§3.2) are **included** in the stats (unless excluded as an outlier, §7.5). The UI footnotes how many PRs in the window were approximate.
+
+### 7.5 Outlier threshold (TTM cap)
+
+A configurable threshold drops time-to-merge **outliers** — PRs that sat open far longer than normal (weeks/months) and distort the mean (and, to a lesser degree, the median).
+
+- **Default 7 days.** Overridable per request from the UI (§8) and via the `PR_STATS_TTM_THRESHOLD_DAYS` env var, which sets the server-side default the UI starts from.
+- A PR whose `ttm_seconds` **exceeds** the threshold is excluded **entirely** — it counts toward neither `count` nor median/mean nor the approximate tally (§7.4). A PR exactly **at** the threshold is kept. A PR with a null `ttm_seconds` has no TTM to compare and is never excluded.
+- Applied **in app code** after the §7.1 fetch (the query itself is unchanged), in the same pass that buckets and computes the math.
+- The number of PRs excluded in the window is reported alongside the stats (for a footnote, §8.4), as is the threshold actually applied (so the UI control can reflect the configured default).
+- The cap is **always on**: the UI input is a required integer number of days (≥ 1); there is no "show everything" mode.
 
 ---
 
@@ -253,6 +263,7 @@ Query-only. Read-only against the SQLite DB; launched via the CLI (§9).
 - Pick **one repo**.
 - Window is fixed to the trailing 12 months (§7.2).
 - Toggle between two view modes: **Overall** (default) and **By category**.
+- A **max time-to-merge** input (days, default 7) caps outliers (§7.5); it applies to both view modes, and changing it re-fetches the stats (the cap is applied server-side, so this is not a pure client-side re-render).
 
 ### 8.2 Overall view (default)
 
@@ -270,7 +281,7 @@ Only one metric fits legibly per category, so the view shows a single metric cho
 ### 8.4 Display
 
 - Durations formatted human-readably (e.g. `2d 4h`, `6h 30m`); stored as seconds.
-- Footnote: count of approximate-TTM PRs in the window (§7.4).
+- Footnote: count of PRs **excluded as outliers** (§7.5) and count of **approximate-TTM** PRs (§7.4) in the window.
 
 ---
 
@@ -282,7 +293,7 @@ The CLI is the only thing that writes data and is the entry point for the UI.
 - **Remove repo** — delete a repo and its PRs.
 - **List repos** — show tracked repos with last-sync time and stored PR count.
 - **Sync** — run a manual sync for a repo (the logic in §2); refuses if one is already running for that repo.
-- **Serve UI** — launch the query-only UI against the local DB.
+- **Serve UI** — launch the query-only UI against the local DB (honors `PR_STATS_TTM_THRESHOLD_DAYS` for the default outlier cap, §7.5).
 
 ---
 
