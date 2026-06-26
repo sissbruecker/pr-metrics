@@ -267,7 +267,12 @@ export async function syncRepo(
 
   try {
     const windows = generateWindows(cursor, now());
-    for await (const page of client.paginateWindowed(repo.owner, repo.repo, windows)) {
+    for await (const page of client.paginateWindowed(
+      repo.owner,
+      repo.repo,
+      repo.base_branch,
+      windows,
+    )) {
       // Each page's upserts run in their own transaction, so a mid-run throw on
       // a later page leaves earlier pages committed (the failure contract keeps
       // already-upserted rows).

@@ -30,8 +30,10 @@ Usage:
 
 Commands:
   add <owner>/<name> [--name <display>] [--backfill-start <YYYY-MM-DD>]
+      [--base-branch <branch>]
       Register a repo to track. Defaults: display name to "<owner>/<name>",
-      backfill start to ~12 months before today.
+      backfill start to ~12 months before today, base branch to "main".
+      Only PRs merged into the base branch are synced.
 
   remove <owner>/<name>
       Remove a tracked repo and its stored PRs (and sync history).
@@ -126,13 +128,17 @@ function findRepoBySlug(db: Database, owner: string, repo: string): RepoRow {
 
 // --- Subcommand handlers ----------------------------------------------------
 
-/** `add <owner>/<name> [--name <display>] [--backfill-start <YYYY-MM-DD>]` */
+/**
+ * `add <owner>/<name> [--name <display>] [--backfill-start <YYYY-MM-DD>]
+ *  [--base-branch <branch>]`
+ */
 function cmdAdd(argv: string[], config: Config): number {
   const { values, positionals } = parseArgs({
     args: argv,
     options: {
       name: { type: "string" },
       "backfill-start": { type: "string" },
+      "base-branch": { type: "string" },
     },
     allowPositionals: true,
     strict: true,
@@ -143,6 +149,7 @@ function cmdAdd(argv: string[], config: Config): number {
   const backfillStart = values["backfill-start"]
     ? requireIsoDate(values["backfill-start"], "--backfill-start")
     : defaultBackfillStart();
+  const baseBranch = values["base-branch"] ?? "main";
   const url = `https://github.com/${owner}/${repo}`;
 
   const db = openDb(config.dbPath);
@@ -156,12 +163,13 @@ function cmdAdd(argv: string[], config: Config): number {
   }
 
   db.query(
-    `INSERT INTO repos (name, owner, repo, url, backfill_start, created_at)
-     VALUES (?, ?, ?, ?, ?, ?)`,
-  ).run(displayName, owner, repo, url, backfillStart, new Date().toISOString());
+    `INSERT INTO repos (name, owner, repo, url, base_branch, backfill_start, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?)`,
+  ).run(displayName, owner, repo, url, baseBranch, backfillStart, new Date().toISOString());
 
   console.log(
-    `Added ${owner}/${repo} (display: "${displayName}", backfill from ${backfillStart}).`,
+    `Added ${owner}/${repo} (display: "${displayName}", base branch ${baseBranch}, ` +
+      `backfill from ${backfillStart}).`,
   );
   return 0;
 }

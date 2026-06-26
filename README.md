@@ -42,9 +42,11 @@ bun run start <command> [options]
 bun run src/index.ts --help
 
 # Register a repo to track (display name defaults to "<owner>/<name>",
-# backfill start defaults to ~12 months ago)
+# backfill start defaults to ~12 months ago, base branch defaults to "main").
+# Only PRs merged into the base branch are synced.
 bun run src/index.ts add vaadin/flow
 bun run src/index.ts add vaadin/flow --name "Flow" --backfill-start 2024-01-01
+bun run src/index.ts add vaadin/flow --base-branch master
 
 # List tracked repos with last-sync time and stored PR count
 bun run src/index.ts list

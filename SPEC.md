@@ -23,12 +23,14 @@ Each sync fetches PRs that were **merged** since the last sync — cursoring on 
 
 - Cursor: `merged_at >= last_synced_at`.
 - Only **merged** PRs are stored. Open and closed-unmerged PRs are ignored.
+- Only PRs merged into the repo's **base branch** are fetched (§2.2). PRs targeting other branches (e.g. long-lived feature or release branches) are ignored, so the stats reflect merges into the mainline.
 - PRs are fetched **ascending by `merged_at`**, so an interrupted run leaves a contiguous prefix and the cursor logic (§2.5) stays correct.
 
 ### 2.2 Sync state per repo
 
 - `last_synced_at` — the cursor; advances only on a fully successful run (§2.5).
 - `backfill_start` — the earliest merge date to fetch on the **first** sync (default: last 12–24 months, configurable per repo). Prevents pulling unbounded history on initial sync.
+- `base_branch` — the branch PRs must target to be synced (§2.1). Configurable per repo at add time; **defaults to `main`**.
 
 ### 2.3 Per-PR detail
 
@@ -123,6 +125,7 @@ SQLite. Conventions:
 | owner | TEXT | GitHub owner |
 | repo | TEXT | GitHub repo name |
 | url | TEXT | |
+| base_branch | TEXT | branch PRs must target to be synced; defaults to `main` |
 | backfill_start | TEXT | ISO date; earliest merge to fetch on first sync |
 | last_synced_at | TEXT | ISO; null until first sync |
 | created_at | TEXT | |
@@ -275,7 +278,7 @@ Only one metric fits legibly per category, so the view shows a single metric cho
 
 The CLI is the only thing that writes data and is the entry point for the UI.
 
-- **Add repo** — register a repo (owner/name, display name, `backfill_start`).
+- **Add repo** — register a repo (owner/name, display name, `backfill_start`, `base_branch` — defaults to `main`).
 - **Remove repo** — delete a repo and its PRs.
 - **List repos** — show tracked repos with last-sync time and stored PR count.
 - **Sync** — run a manual sync for a repo (the logic in §2); refuses if one is already running for that repo.
@@ -337,8 +340,9 @@ query($q: String!, $cursor: String) {
 }
 ```
 
-- **Query string:** `repo:<owner>/<name> is:pr is:merged merged:>=<cursor> sort:created-asc`
+- **Query string:** `repo:<owner>/<name> is:pr is:merged base:<base_branch> merged:>=<cursor> sort:created-asc`
   - `merged:>=<ISO date>` applies the §2.1 cursor (`backfill_start` on first sync, `last_synced_at` after). GitHub's search `merged:` filter accepts a date or datetime.
+  - `base:<base_branch>` restricts results to PRs merged into the repo's base branch (§2.1–2.2).
   - `sort:created-asc` — search cannot sort by `merged_at`, so we sort ascending by creation as the stable ordering. The actual cursor advancement still uses the **max `merged_at` seen** (§2.5), computed app-side from the returned rows, so this sort choice doesn't affect correctness — it only keeps interrupted runs from skipping rows.
 - **Pagination:** loop on `pageInfo.hasNextPage`, passing `endCursor` as `$cursor`. Search caps results at **1000 per query**; for a backfill that exceeds this, narrow the window with date ranges (`merged:<start>..<end>`) and page each window.
 - The draft/ready timeline and all size/review fields are fetched **inline per node** (§11.3) — no second per-PR round trip (§2.3, §10).

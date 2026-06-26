@@ -280,27 +280,34 @@ export function buildListQuery(): string {
 
 /**
  * Build the search query *string* (the value of the `$q` variable) for all
- * merged PRs in a repo merged on/after `since` (an ISO date or datetime).
+ * merged PRs in a repo merged on/after `since` (an ISO date or datetime),
+ * restricted to PRs targeting `base`.
  *
  * Results are sorted ascending by creation time: search cannot sort by
  * `merged_at`, so creation order is the stable cursor ordering.
  */
-export function buildSearchQueryString(owner: string, name: string, since: string): string {
-  return `repo:${owner}/${name} is:pr is:merged merged:>=${since} sort:created-asc`;
+export function buildSearchQueryString(
+  owner: string,
+  name: string,
+  base: string,
+  since: string,
+): string {
+  return `repo:${owner}/${name} is:pr is:merged base:${base} merged:>=${since} sort:created-asc`;
 }
 
 /**
- * Build the search query *string* restricted to PRs merged within a closed
- * `[start, end]` window. Used to slice a large backfill into sub-1000-result
- * windows that each fit under the search cap.
+ * Build the search query *string* restricted to PRs targeting `base` and merged
+ * within a closed `[start, end]` window. Used to slice a large backfill into
+ * sub-1000-result windows that each fit under the search cap.
  */
 export function buildWindowedSearchQueryString(
   owner: string,
   name: string,
+  base: string,
   start: string,
   end: string,
 ): string {
-  return `repo:${owner}/${name} is:pr is:merged merged:${start}..${end} sort:created-asc`;
+  return `repo:${owner}/${name} is:pr is:merged base:${base} merged:${start}..${end} sort:created-asc`;
 }
 
 // --- Client ------------------------------------------------------------------
@@ -486,10 +493,11 @@ export class GitHubClient {
   async *paginateWindowed(
     owner: string,
     name: string,
+    base: string,
     windows: Iterable<{ start: string; end: string }>,
   ): AsyncGenerator<SearchPage> {
     for (const { start, end } of windows) {
-      const q = buildWindowedSearchQueryString(owner, name, start, end);
+      const q = buildWindowedSearchQueryString(owner, name, base, start, end);
       yield* this.paginateSearch(q);
     }
   }

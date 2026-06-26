@@ -24,6 +24,8 @@ export interface RepoRow {
   /** GitHub repository name. */
   repo: string;
   url: string;
+  /** Base branch PRs must target to be synced (default `main`). */
+  base_branch: string;
   /** ISO date — earliest merge to fetch on the first sync. */
   backfill_start: string;
   /** ISO timestamp; null until the first successful sync. */
@@ -100,6 +102,7 @@ CREATE TABLE IF NOT EXISTS repos (
   owner TEXT NOT NULL,
   repo TEXT NOT NULL,
   url TEXT NOT NULL,
+  base_branch TEXT NOT NULL DEFAULT 'main',
   backfill_start TEXT,
   last_synced_at TEXT,
   created_at TEXT NOT NULL,
