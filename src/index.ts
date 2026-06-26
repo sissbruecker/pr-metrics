@@ -8,4 +8,4 @@
 
 import { run } from "./cli.ts";
 
-process.exit(run());
+process.exit(await run());

@@ -98,11 +98,11 @@ Derived from `SPEC.md`. Check off each task as it lands. Section references (§)
 
 ## 11. CLI
 
-- [ ] `add` repo — register owner/name, display name, `backfill_start` (§9).
-- [ ] `remove` repo — delete repo and its PRs (§9).
-- [ ] `list` repos — show tracked repos with last-sync time and stored PR count (§9).
-- [ ] `sync` — run a manual sync for a repo; refuse if one is already running (§9, §2.8).
-- [ ] `serve` — launch the query-only UI against the local DB (§9, §8).
+- [X] `add` repo — register owner/name, display name, `backfill_start` (§9).
+- [X] `remove` repo — delete repo and its PRs (§9).
+- [X] `list` repos — show tracked repos with last-sync time and stored PR count (§9).
+- [X] `sync` — run a manual sync for a repo; refuse if one is already running (§9, §2.8).
+- [X] `serve` — launch the query-only UI against the local DB (§9, §8).
 
 ## 12. Tests (`bun test`)
 
