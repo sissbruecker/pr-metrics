@@ -30,12 +30,12 @@ Each sync fetches PRs that were **merged** since the last sync — cursoring on 
 - `last_synced_at` — the cursor; advances only on a fully successful run (§2.5).
 - `backfill_start` — the earliest merge date to fetch on the **first** sync (default: last 12–24 months, configurable per repo). Prevents pulling unbounded history on initial sync.
 
-### 2.3 Per-PR fetch depth
+### 2.3 Per-PR detail
 
-Computing the TTM start point (§3) requires each PR's **draft/ready transition history**, which is a per-PR timeline fetch on top of the list query.
+Computing the TTM start point (§3) requires each PR's **draft/ready transition history**. This is fetched **inline with the list query** (§11) — GraphQL returns each PR's timeline alongside its list fields in one paginated request, so there is no separate per-PR call.
 
-- Sync fetches the timeline **only for draft/ready transitions**.
-- `first_commit_at` / `first_review_at` are captured **only if available cheaply**; if they would require extra per-PR calls, they are left null. They are not needed for the TTM metric.
+- The timeline is filtered to **only draft/ready transitions** (§11.4).
+- `first_review_at` is captured from the same query (the first review's timestamp). It is **not** needed for the TTM metric — it is stored for possible future stats — and is left null when the PR has no reviews.
 
 ### 2.4 Idempotency
 
@@ -97,9 +97,9 @@ The clock starts when the PR became ready for review (i.e. excluding time it sat
 Stored raw so categorization and filtering can evolve without re-syncing.
 
 - **Identity:** number, title, body, author, URL
-- **Timestamps:** created, merged, closed, updated; first commit; first review (if cheap); draft/ready transitions
+- **Timestamps:** created, merged, closed, updated; first review; draft/ready transitions
 - **Branches:** base branch, head branch
-- **Classification inputs:** labels, milestone, assignees, requested reviewers, approvers, linked issues
+- **Classification inputs:** labels, milestone, assignees, requested reviewers
 - **Size:** additions, deletions, changed_files, commit count
 - **Activity:** review count, comment count
 - **Flags:** was-ever-draft, approximate-TTM flag (§3.2)
@@ -137,7 +137,7 @@ SQLite. Conventions:
 | number | INTEGER | UNIQUE(repo_id, number) |
 | title, body, author, url | TEXT | |
 | created_at, merged_at, closed_at, updated_at | TEXT | ISO 8601 UTC |
-| first_commit_at, first_review_at | TEXT | ISO; nullable |
+| first_review_at | TEXT | ISO; nullable |
 | ready_for_review_at | TEXT | computed TTM start point (§3) |
 | ttm_seconds | INTEGER | computed, stored for speed |
 | ttm_is_approximate | INTEGER | 0/1 flag |
@@ -146,7 +146,7 @@ SQLite. Conventions:
 | additions, deletions, changed_files, commit_count | INTEGER | |
 | review_count, comment_count | INTEGER | |
 | milestone | TEXT | nullable |
-| labels, assignees, requested_reviewers, approvers, linked_issues | TEXT | JSON arrays |
+| labels, assignees, requested_reviewers | TEXT | JSON arrays |
 | draft_events | TEXT | JSON array of `{type, at}` transitions |
 | synced_at | TEXT | ISO; when this row was last written |
 
@@ -303,7 +303,7 @@ The CLI is the only thing that writes data and is the entry point for the UI.
 
 ### Notable decisions
 
-- **GraphQL over REST** for GitHub — the draft/ready timeline (`READY_FOR_REVIEW_EVENT` / `CONVERT_TO_DRAFT_EVENT`) plus size/review fields are fetched alongside the PR list in one paginated query, keeping the §2.3 per-PR fetch cheap and easier on the rate limit.
+- **GraphQL over REST** for GitHub — the draft/ready timeline (`READY_FOR_REVIEW_EVENT` / `CONVERT_TO_DRAFT_EVENT`) plus size/review fields are fetched alongside the PR list in one paginated query, collapsing the §2.3 per-PR detail into the list fetch — no second round trip, and easier on the rate limit.
 - **No GitHub SDK (Octokit)** — plain `fetch` keeps dependencies at zero; the spec needs only a list/search query plus timeline fields.
 - **Charts client-side** (Chart.js), not server-rendered SVG — simplest path to the §8.2–8.3 line charts; the server stays a thin JSON-over-SQLite layer. (uPlot is a smaller alternative if asset size matters.)
 - **No web framework** — `Bun.serve` with a small route switch is enough for one read-only page and one query endpoint.
@@ -312,7 +312,85 @@ This resolves the "API choice, auth, framework" item below; exact schema DDL is 
 
 ---
 
-## 11. Open / deferred
+## 11. Driving the GitHub API
+
+GitHub **GraphQL v4** (`POST https://api.github.com/graphql`), plain `fetch`, no SDK (§10). The shapes below are verified working against `vaadin/flow-components#9607`.
+
+### 11.1 Request mechanics
+
+- **Auth:** `Authorization: Bearer <token>`. A classic token with `repo` scope (or fine-grained read access to the target repos) is sufficient. Read the token from config/env — never hard-code it.
+- **`User-Agent` header is mandatory** — GitHub rejects requests without one.
+- Body is `{ query, variables }` as JSON. Always pass values as GraphQL **variables**, never string-interpolated into the query.
+- Errors come back as `200 OK` with a top-level `errors` array — check `json.errors` on every response, don't rely on HTTP status alone.
+
+### 11.2 List query — finding merged PRs
+
+Use `search(type: ISSUE)` with a query string, **not** `repository.pullRequests` — search lets us filter on merge state and sort by merge time, which the cursor logic (§2.5) depends on.
+
+```graphql
+query($q: String!, $cursor: String) {
+  rateLimit { remaining resetAt cost }
+  search(query: $q, type: ISSUE, first: 50, after: $cursor) {
+    pageInfo { hasNextPage endCursor }
+    nodes { ... on PullRequest { <fields, see §11.3> } }
+  }
+}
+```
+
+- **Query string:** `repo:<owner>/<name> is:pr is:merged merged:>=<cursor> sort:created-asc`
+  - `merged:>=<ISO date>` applies the §2.1 cursor (`backfill_start` on first sync, `last_synced_at` after). GitHub's search `merged:` filter accepts a date or datetime.
+  - `sort:created-asc` — search cannot sort by `merged_at`, so we sort ascending by creation as the stable ordering. The actual cursor advancement still uses the **max `merged_at` seen** (§2.5), computed app-side from the returned rows, so this sort choice doesn't affect correctness — it only keeps interrupted runs from skipping rows.
+- **Pagination:** loop on `pageInfo.hasNextPage`, passing `endCursor` as `$cursor`. Search caps results at **1000 per query**; for a backfill that exceeds this, narrow the window with date ranges (`merged:<start>..<end>`) and page each window.
+- The draft/ready timeline and all size/review fields are fetched **inline per node** (§11.3) — no second per-PR round trip (§2.3, §10).
+
+### 11.3 Fields per PR
+
+All of §4 comes from one PullRequest selection:
+
+```graphql
+number title url body
+author { login }
+createdAt mergedAt closedAt updatedAt
+isDraft merged
+baseRefName headRefName
+additions deletions changedFiles
+milestone { title }
+commits { totalCount }
+reviews(first: 1) { totalCount nodes { submittedAt } }
+comments { totalCount }
+labels(first: 20) { nodes { name } }
+assignees(first: 10) { nodes { login } }
+reviewRequests(first: 10) { nodes { requestedReviewer { ... on User { login } } } }
+timelineItems(first: 100, itemTypes: [READY_FOR_REVIEW_EVENT, CONVERT_TO_DRAFT_EVENT]) {
+  nodes {
+    __typename
+    ... on ReadyForReviewEvent { createdAt }
+    ... on ConvertToDraftEvent { createdAt }
+  }
+}
+```
+
+- `first_review_at` is the first review's `submittedAt` (reviews come back in creation order, so `first: 1` is the earliest). It is unused by the TTM metric (§3) and stored only for possible future stats; null when the PR has no reviews. `totalCount` on the same connection gives `review_count`.
+
+### 11.4 Draft/ready timeline — the key gotcha
+
+`timelineItems` is filtered to the two transition events (§3.2). **`timelineItems.totalCount` ignores the `itemTypes` filter** — it returns the count of *all* timeline events (e.g. 22 for #9607, which had zero draft transitions). Therefore:
+
+- Derive `was_ever_draft` and `ready_for_review_at` **only from the `nodes` array**, never from `totalCount`.
+- Empty `nodes` → PR was never a draft → start = `created_at` (§3.2 row 1).
+- One or more `ReadyForReviewEvent` nodes → start = the **latest** such `createdAt` before merge (§3.2 row 3). Sort the nodes by timestamp app-side.
+- If a PR merged while still a draft (`CONVERT_TO_DRAFT_EVENT` is the last transition, or `isDraft` true at merge) → no usable ready event → fall back to `created_at` (§3.2 row 4).
+- `first: 100` covers the transition history of any realistic PR; if a PR ever exceeds it, page the connection (rare — would only matter for pathological draft toggling).
+
+### 11.5 Rate limits (§2.6)
+
+- Every query selects `rateLimit { remaining resetAt cost }`. GraphQL bills by **query cost** (typically 1 per page here), not per HTTP request; `remaining` is out of 5000/hr.
+- Before/after each page, if `remaining` is near zero, `await Bun.sleep(resetAt - now)` then resume the same run.
+- GitHub may also return a `403`/`429` with a `Retry-After` header on secondary limits — honor it the same way (pause and resume).
+
+---
+
+## 12. Open / deferred
 
 - Exact schema DDL — derived from the data model in §5 at implementation time.
 - Multi-repo aggregation — UI is single-repo for now; the aggregate-into-one model is designed for but not built.
