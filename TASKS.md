@@ -14,12 +14,12 @@ Derived from `SPEC.md`. Check off each task as it lands. Section references (§)
 
 ## 2. Data model (SQLite via `bun:sqlite`)
 
-- [ ] Create DB bootstrap that opens `bun:sqlite` and applies schema/migrations on startup (§5, §10).
-- [ ] Create `repos` table: id, name, owner, repo, url, backfill_start, last_synced_at, created_at; `UNIQUE(owner, repo)` (§5).
-- [ ] Create `pull_requests` table with all columns: identity, timestamps, `first_review_at`, `ready_for_review_at`, `ttm_seconds`, `ttm_is_approximate`, `was_ever_draft`, branches, size, activity, milestone, JSON columns (labels, assignees, requested_reviewers, draft_events), `synced_at`; `UNIQUE(repo_id, number)` (§4, §5).
-- [ ] Create `sync_runs` table: id, repo_id, started_at, finished_at, cursor_from, count_fetched, status, error (§2.8, §5).
-- [ ] Add indexes: `pull_requests(repo_id, merged_at)` and `pull_requests(merged_at)` (§5).
-- [ ] Store all timestamps as ISO 8601 UTC text; many-valued metadata and draft transitions as JSON text (§5).
+- [X] Create DB bootstrap that opens `bun:sqlite` and applies schema/migrations on startup (§5, §10).
+- [X] Create `repos` table: id, name, owner, repo, url, backfill_start, last_synced_at, created_at; `UNIQUE(owner, repo)` (§5).
+- [X] Create `pull_requests` table with all columns: identity, timestamps, `first_review_at`, `ready_for_review_at`, `ttm_seconds`, `ttm_is_approximate`, `was_ever_draft`, branches, size, activity, milestone, JSON columns (labels, assignees, requested_reviewers, draft_events), `synced_at`; `UNIQUE(repo_id, number)` (§4, §5).
+- [X] Create `sync_runs` table: id, repo_id, started_at, finished_at, cursor_from, count_fetched, status, error (§2.8, §5).
+- [X] Add indexes: `pull_requests(repo_id, merged_at)` and `pull_requests(merged_at)` (§5).
+- [X] Store all timestamps as ISO 8601 UTC text; many-valued metadata and draft transitions as JSON text (§5).
 
 ## 3. GitHub GraphQL client
 
