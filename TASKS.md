@@ -64,9 +64,9 @@ Derived from `SPEC.md`. Check off each task as it lands. Section references (§)
 
 ## 7. Categorization (query-time, app code)
 
-- [ ] Implement title-prefix → category rules, first match wins, hard-coded in app code (§6.1, §6.2).
-- [ ] Implement default rule set: `fix:`→Fix, `feat:`/`feature:`→Feature, `refactor:`→Refactor, `docs:`→Docs, `chore:`→Chore, `test:`→Test (§6.3).
-- [ ] No match → **Uncategorized** (§6.2, §6.4).
+- [X] Implement title-prefix → category rules, first match wins, hard-coded in app code (§6.1, §6.2).
+- [X] Implement default rule set: `fix:`→Fix, `feat:`/`feature:`→Feature, `refactor:`→Refactor, `docs:`→Docs, `chore:`→Chore, `test:`→Test (§6.3).
+- [X] No match → **Uncategorized** (§6.2, §6.4).
 
 ## 8. Statistics & aggregation (in-app)
 
