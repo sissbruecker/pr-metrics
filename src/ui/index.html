@@ -1,0 +1,47 @@
+<link rel="stylesheet" href="/styles.css" />
+
+<h1>PR Time-to-Merge Stats</h1>
+
+<div id="controls" class="controls hidden">
+  <div class="control">
+    <label for="repo-select">Repository</label>
+    <select id="repo-select"></select>
+  </div>
+
+  <div class="control">
+    <span class="control-label">View</span>
+    <div class="toggle-group" id="view-toggle" role="group" aria-label="View mode">
+      <button type="button" data-view="overall" aria-pressed="true">Overall</button>
+      <button type="button" data-view="byCategory" aria-pressed="false">By category</button>
+    </div>
+  </div>
+
+  <div class="control hidden" id="metric-control">
+    <label for="metric-select">Metric</label>
+    <select id="metric-select">
+      <option value="median" selected>Median</option>
+      <option value="mean">Mean</option>
+      <option value="count">Count</option>
+    </select>
+  </div>
+</div>
+
+<div id="empty-message" class="message hidden">No repos tracked yet.</div>
+
+<div id="report" class="hidden">
+  <div class="chart-wrap">
+    <canvas id="chart"></canvas>
+  </div>
+
+  <div class="table-scroll">
+    <table id="data-table">
+      <thead></thead>
+      <tbody></tbody>
+    </table>
+  </div>
+
+  <p id="footnote" class="footnote"></p>
+</div>
+
+<script src="/chart.umd.js"></script>
+<script type="module" src="/app.js"></script>

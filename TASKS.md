@@ -85,16 +85,16 @@ Derived from `SPEC.md`. Check off each task as it lands. Section references (§)
 
 ## 10. UI (query-only, client-side)
 
-- [ ] Repo selector — pick one repo; window fixed to trailing 12 months (§8.1).
-- [ ] View-mode toggle: **Overall** (default) / **By category** (§8.1).
-- [ ] Overall table: 12 month-rows × `count`, `median`, `mean` (§8.2).
-- [ ] Overall chart: median & mean as lines over months (count not drawn) (§8.2).
-- [ ] By-category metric selector: median / mean / count, default median (§8.3).
-- [ ] By-category table: months × categories for selected metric + an **"All"** column (§8.3).
-- [ ] By-category chart: one line per category for the selected metric (§8.3).
-- [ ] Always show **Uncategorized** as its own category, never hidden (§6.4, §8.3).
-- [ ] Format durations human-readably (`2d 4h`, `6h 30m`) from stored seconds (§8.4).
-- [ ] Footnote with count of approximate-TTM PRs in the window (§8.4).
+- [X] Repo selector — pick one repo; window fixed to trailing 12 months (§8.1).
+- [X] View-mode toggle: **Overall** (default) / **By category** (§8.1).
+- [X] Overall table: 12 month-rows × `count`, `median`, `mean` (§8.2).
+- [X] Overall chart: median & mean as lines over months (count not drawn) (§8.2).
+- [X] By-category metric selector: median / mean / count, default median (§8.3).
+- [X] By-category table: months × categories for selected metric + an **"All"** column (§8.3).
+- [X] By-category chart: one line per category for the selected metric (§8.3).
+- [X] Always show **Uncategorized** as its own category, never hidden (§6.4, §8.3).
+- [X] Format durations human-readably (`2d 4h`, `6h 30m`) from stored seconds (§8.4).
+- [X] Footnote with count of approximate-TTM PRs in the window (§8.4).
 
 ## 11. CLI
 
