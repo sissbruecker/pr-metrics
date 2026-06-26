@@ -39,17 +39,17 @@ Derived from `SPEC.md`. Check off each task as it lands. Section references (§)
 
 ## 5. Time-to-merge computation
 
-- [ ] Parse `timelineItems.nodes` only (never `totalCount` — it ignores the filter) to derive draft/ready history (§11.4).
-- [ ] Compute `ready_for_review_at` per the §3.2 rules:
-  - [ ] Never a draft (empty nodes) → `created_at` (§3.2 row 1, §11.4).
-  - [ ] Marked ready once → the ready event timestamp (§3.2 row 2).
-  - [ ] Toggled multiple times → the **last** ready-for-review transition before merge (§3.2 row 3, §11.4).
-  - [ ] Merged while still draft (last transition is convert-to-draft, or `isDraft` at merge) → `created_at` (§3.2 row 4, §11.4).
-  - [ ] Draft history unavailable/missing → `created_at` **and** set `ttm_is_approximate = 1` (§3.2 row 5).
-- [ ] Derive `was_ever_draft` from presence of transition nodes (§11.4).
-- [ ] Compute and store `ttm_seconds = merged_at − ready_for_review_at` (§3.1, §3.3).
-- [ ] Store raw draft/ready transitions in `draft_events` so the definition can change without re-syncing (§3.3).
-- [ ] Capture `first_review_at` from `reviews(first:1)`, null when no reviews; unused by TTM (§2.3, §11.3).
+- [X] Parse `timelineItems.nodes` only (never `totalCount` — it ignores the filter) to derive draft/ready history (§11.4).
+- [X] Compute `ready_for_review_at` per the §3.2 rules:
+  - [X] Never a draft (empty nodes) → `created_at` (§3.2 row 1, §11.4).
+  - [X] Marked ready once → the ready event timestamp (§3.2 row 2).
+  - [X] Toggled multiple times → the **last** ready-for-review transition before merge (§3.2 row 3, §11.4).
+  - [X] Merged while still draft (last transition is convert-to-draft, or `isDraft` at merge) → `created_at` (§3.2 row 4, §11.4).
+  - [X] Draft history unavailable/missing → `created_at` **and** set `ttm_is_approximate = 1` (§3.2 row 5).
+- [X] Derive `was_ever_draft` from presence of transition nodes (§11.4).
+- [X] Compute and store `ttm_seconds = merged_at − ready_for_review_at` (§3.1, §3.3).
+- [X] Store raw draft/ready transitions in `draft_events` so the definition can change without re-syncing (§3.3).
+- [X] Capture `first_review_at` from `reviews(first:1)`, null when no reviews; unused by TTM (§2.3, §11.3).
 
 ## 6. Sync engine
 
