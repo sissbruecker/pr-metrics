@@ -106,13 +106,13 @@ Derived from `SPEC.md`. Check off each task as it lands. Section references (§)
 
 ## 12. Tests (`bun test`)
 
-- [ ] TTM start-point logic across all §3.2 cases (never draft, ready once, multiple toggles, merged-as-draft, missing history).
-- [ ] Timeline parsing: ignore `totalCount`, derive from `nodes` only (§11.4).
-- [ ] Cursor advancement: max-`merged_at`-seen, no advance on zero rows, no advance on failure (§2.5).
-- [ ] Idempotency: re-running a sync produces no duplicates (§2.4).
-- [ ] Categorization rules incl. first-match-wins and Uncategorized fallback (§6).
-- [ ] Aggregation: median/mean/count, empty-month filling, "All" totals, approximate count (§7).
-- [ ] Duration formatting (§8.4).
+- [X] TTM start-point logic across all §3.2 cases (never draft, ready once, multiple toggles, merged-as-draft, missing history).
+- [X] Timeline parsing: ignore `totalCount`, derive from `nodes` only (§11.4).
+- [X] Cursor advancement: max-`merged_at`-seen, no advance on zero rows, no advance on failure (§2.5).
+- [X] Idempotency: re-running a sync produces no duplicates (§2.4).
+- [X] Categorization rules incl. first-match-wins and Uncategorized fallback (§6).
+- [X] Aggregation: median/mean/count, empty-month filling, "All" totals, approximate count (§7).
+- [X] Duration formatting (§8.4).
 
 ## 13. Distribution
 
