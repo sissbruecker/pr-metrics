@@ -53,14 +53,14 @@ Derived from `SPEC.md`. Check off each task as it lands. Section references (§)
 
 ## 6. Sync engine
 
-- [ ] Determine cursor: `backfill_start` on first sync, `last_synced_at` afterwards; filter `merged_at >= cursor` (§2.1, §2.2).
-- [ ] Store only merged PRs; ignore open and closed-unmerged (§2.1).
-- [ ] Upsert by `(repo_id, number)` with `ON CONFLICT` — idempotent, no duplicates (§2.4).
-- [ ] On successful run, advance `last_synced_at` to the **max `merged_at` actually seen**; leave unchanged if zero PRs fetched (§2.5).
-- [ ] On partial failure: keep upserted rows, do **not** advance cursor, record `sync_runs.status = error` (§2.5).
-- [ ] Write a `sync_runs` row at start (`status = running`) with `cursor_from`; finalize with finished_at, count_fetched, status, error (§2.8).
-- [ ] Refuse a new sync for a repo that already has a `running` `sync_runs` row (§2.8).
-- [ ] Set `synced_at` on each upserted PR row (§5).
+- [X] Determine cursor: `backfill_start` on first sync, `last_synced_at` afterwards; filter `merged_at >= cursor` (§2.1, §2.2).
+- [X] Store only merged PRs; ignore open and closed-unmerged (§2.1).
+- [X] Upsert by `(repo_id, number)` with `ON CONFLICT` — idempotent, no duplicates (§2.4).
+- [X] On successful run, advance `last_synced_at` to the **max `merged_at` actually seen**; leave unchanged if zero PRs fetched (§2.5).
+- [X] On partial failure: keep upserted rows, do **not** advance cursor, record `sync_runs.status = error` (§2.5).
+- [X] Write a `sync_runs` row at start (`status = running`) with `cursor_from`; finalize with finished_at, count_fetched, status, error (§2.8).
+- [X] Refuse a new sync for a repo that already has a `running` `sync_runs` row (§2.8).
+- [X] Set `synced_at` on each upserted PR row (§5).
 
 ## 7. Categorization (query-time, app code)
 
