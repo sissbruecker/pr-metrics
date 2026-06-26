@@ -79,9 +79,9 @@ Derived from `SPEC.md`. Check off each task as it lands. Section references (§)
 
 ## 9. Web server (`Bun.serve`)
 
-- [ ] Implement `Bun.serve` with a small route switch: serve static UI + one JSON stats endpoint; read-only, never writes (§8, §10).
-- [ ] JSON stats endpoint: takes a repo (and view params), returns the aggregated 12-month buckets (overall + by-category) and approximate count (§7, §8).
-- [ ] Serve static UI assets including vendored Chart.js as a single static asset (§8, §10).
+- [X] Implement `Bun.serve` with a small route switch: serve static UI + one JSON stats endpoint; read-only, never writes (§8, §10).
+- [X] JSON stats endpoint: takes a repo (and view params), returns the aggregated 12-month buckets (overall + by-category) and approximate count (§7, §8).
+- [X] Serve static UI assets including vendored Chart.js as a single static asset (§8, §10).
 
 ## 10. UI (query-only, client-side)
 
