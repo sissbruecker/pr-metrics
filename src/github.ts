@@ -7,9 +7,12 @@
  * pagination helpers — including a date-windowed variant for backfills that
  * exceed GitHub's 1000-result search cap.
  *
- * This module is a pure fetch layer: it does not touch the database, compute
- * derived metrics, or pause on rate limits. Callers drive it and decide what to
- * do with the returned nodes and `rateLimit` info.
+ * This module is a pure fetch layer: it does not touch the database or compute
+ * derived metrics. It is, however, rate-limit aware — it proactively pauses
+ * when GitHub's primary GraphQL budget is nearly spent and reactively backs off
+ * on secondary-limit responses (`403`/`429` with `Retry-After`), resuming the
+ * same run instead of failing. Callers drive it and decide what to do with the
+ * returned nodes and `rateLimit` info.
  */
 
 /** GitHub GraphQL v4 endpoint. */
@@ -26,6 +29,26 @@ const SEARCH_PAGE_SIZE = 50;
 
 /** GitHub's search API never returns more than this many results for one query. */
 export const SEARCH_RESULT_CAP = 1000;
+
+/**
+ * When a page reports `rateLimit.remaining` at or below this threshold, pause
+ * until the window resets before issuing the next request. A small cushion
+ * (rather than 0) leaves headroom for in-flight or unexpectedly-costly queries.
+ */
+export const RATE_LIMIT_REMAINING_THRESHOLD = 10;
+
+/**
+ * Maximum number of consecutive pause/retry attempts for a single request when
+ * hitting a secondary limit (`403`/`429`). After this many retries the run
+ * fails rather than looping forever.
+ */
+export const MAX_SECONDARY_LIMIT_RETRIES = 5;
+
+/**
+ * Fallback pause (ms) for a secondary-limit response that lacks a usable
+ * `Retry-After` header. Keeps the back-off bounded but non-trivial.
+ */
+export const DEFAULT_SECONDARY_LIMIT_BACKOFF_MS = 60_000;
 
 // --- Response & node types ---------------------------------------------------
 
@@ -122,13 +145,82 @@ export class GitHubGraphQLError extends Error {
   readonly errors?: GraphQLError[];
   /** The HTTP status, if the failure was a transport-level error. */
   readonly status?: number;
+  /**
+   * The response headers for a transport-level error, if available. Surfaced so
+   * the rate-limit logic can read `Retry-After` on secondary-limit responses.
+   */
+  readonly headers?: Headers;
+  /** The raw response body for a transport-level error, if read. */
+  readonly body?: string;
 
-  constructor(message: string, options?: { errors?: GraphQLError[]; status?: number }) {
+  constructor(
+    message: string,
+    options?: { errors?: GraphQLError[]; status?: number; headers?: Headers; body?: string },
+  ) {
     super(message);
     this.name = "GitHubGraphQLError";
     this.errors = options?.errors;
     this.status = options?.status;
+    this.headers = options?.headers;
+    this.body = options?.body;
   }
+}
+
+// --- Rate-limit helpers ------------------------------------------------------
+
+/**
+ * Decide whether an error is a retryable secondary rate limit and, if so, how
+ * long to pause (in ms). Returns `null` for anything that should NOT be retried
+ * — i.e. non-rate-limit errors, or a bare `403` (e.g. a bad token) with no sign
+ * of being rate-limit-related.
+ *
+ * A response is treated as a secondary limit when it is a `403`/`429` AND it
+ * either carries a `Retry-After` header or its body mentions a rate limit.
+ */
+export function secondaryLimitRetryMs(error: unknown): number | null {
+  if (!(error instanceof GitHubGraphQLError)) {
+    return null;
+  }
+  if (error.status !== 403 && error.status !== 429) {
+    return null;
+  }
+
+  const retryAfter = error.headers?.get("retry-after") ?? null;
+  if (retryAfter !== null) {
+    const ms = parseRetryAfterMs(retryAfter);
+    if (ms !== null) {
+      return ms;
+    }
+  }
+
+  // No usable Retry-After: only retry if the body looks rate-limit related,
+  // otherwise treat (e.g.) a bad-token 403 as fatal rather than looping.
+  const looksRateLimited =
+    /rate limit|secondary|abuse/i.test(error.body ?? "") || error.status === 429;
+  return looksRateLimited ? DEFAULT_SECONDARY_LIMIT_BACKOFF_MS : null;
+}
+
+/**
+ * Parse a `Retry-After` header into milliseconds. Supports the delay-seconds
+ * form (e.g. `"30"`) and the HTTP-date form (e.g. an RFC-1123 timestamp),
+ * relative to now. Returns `null` if it can't be parsed, and clamps negative
+ * values to `0`.
+ */
+function parseRetryAfterMs(value: string, now: number = Date.now()): number | null {
+  const trimmed = value.trim();
+  if (trimmed === "") {
+    return null;
+  }
+  // Delay-seconds form.
+  if (/^\d+$/.test(trimmed)) {
+    return Number(trimmed) * 1000;
+  }
+  // HTTP-date form.
+  const dateMs = Date.parse(trimmed);
+  if (!Number.isNaN(dateMs)) {
+    return Math.max(0, dateMs - now);
+  }
+  return null;
 }
 
 // --- Query building ----------------------------------------------------------
@@ -221,6 +313,16 @@ export interface GitHubClientOptions {
   fetch?: typeof fetch;
   /** Override the `User-Agent` header. */
   userAgent?: string;
+  /**
+   * Override the sleep implementation used to pause on rate limits. Defaults to
+   * `Bun.sleep`. Injectable so tests can assert pauses without really waiting.
+   */
+  sleep?: (ms: number) => Promise<void>;
+  /**
+   * Override the wall-clock source (returns epoch ms). Defaults to `Date.now`.
+   * Injectable so tests can compute deterministic pause durations.
+   */
+  now?: () => number;
 }
 
 /**
@@ -232,6 +334,8 @@ export class GitHubClient {
   private readonly endpoint: string;
   private readonly userAgent: string;
   private readonly fetchImpl: typeof fetch;
+  private readonly sleep: (ms: number) => Promise<void>;
+  private readonly now: () => number;
 
   constructor(token: string, options: GitHubClientOptions = {}) {
     if (!token) {
@@ -241,6 +345,8 @@ export class GitHubClient {
     this.endpoint = options.endpoint ?? GITHUB_GRAPHQL_ENDPOINT;
     this.userAgent = options.userAgent ?? USER_AGENT;
     this.fetchImpl = options.fetch ?? fetch;
+    this.sleep = options.sleep ?? ((ms) => Bun.sleep(ms));
+    this.now = options.now ?? (() => Date.now());
   }
 
   /**
@@ -249,8 +355,28 @@ export class GitHubClient {
    * Throws {@link GitHubGraphQLError} on a non-OK HTTP status OR on a `200 OK`
    * response that carries a top-level `errors` array (GitHub returns business
    * errors this way), so callers never have to inspect both channels.
+   *
+   * Secondary rate limits (`403`/`429` with a `Retry-After`) are handled here:
+   * the request pauses for the advised duration and retries the SAME request,
+   * up to {@link MAX_SECONDARY_LIMIT_RETRIES} times before failing.
    */
   async request<T>(query: string, variables: Record<string, unknown>): Promise<T> {
+    for (let attempt = 0; ; attempt++) {
+      try {
+        return await this.rawRequest<T>(query, variables);
+      } catch (error) {
+        const retryMs = secondaryLimitRetryMs(error);
+        if (retryMs === null || attempt >= MAX_SECONDARY_LIMIT_RETRIES) {
+          // Not a secondary limit, or we've exhausted our retries — give up.
+          throw error;
+        }
+        await this.sleep(retryMs);
+      }
+    }
+  }
+
+  /** Send one GraphQL request without any rate-limit retry handling. */
+  private async rawRequest<T>(query: string, variables: Record<string, unknown>): Promise<T> {
     const response = await this.fetchImpl(this.endpoint, {
       method: "POST",
       headers: {
@@ -263,12 +389,13 @@ export class GitHubClient {
     });
 
     if (!response.ok) {
-      // Non-2xx — surface the status and any body we can read for context.
+      // Non-2xx — surface the status, headers, and any body we can read for
+      // context (the headers carry `Retry-After` on secondary-limit responses).
       const text = await response.text().catch(() => "");
       throw new GitHubGraphQLError(
         `GitHub GraphQL request failed with HTTP ${response.status} ${response.statusText}` +
           (text ? `: ${text}` : ""),
-        { status: response.status },
+        { status: response.status, headers: response.headers, body: text },
       );
     }
 
@@ -298,11 +425,35 @@ export class GitHubClient {
       q: searchQuery,
       cursor,
     });
-    return {
+    const page: SearchPage = {
       nodes: data.search.nodes,
       pageInfo: data.search.pageInfo,
       rateLimit: data.rateLimit,
     };
+    // Proactively pause when the primary GraphQL budget is nearly spent, so the
+    // *next* request starts in a fresh window rather than failing. Pausing after
+    // the page (rather than before) means we always have a fresh `resetAt`.
+    await this.pauseIfPrimaryLimitLow(page.rateLimit);
+    return page;
+  }
+
+  /**
+   * If `rateLimit.remaining` is at/below {@link RATE_LIMIT_REMAINING_THRESHOLD},
+   * sleep until `resetAt`. Sleep duration is clamped to a non-negative value, so
+   * an already-elapsed or unparsable `resetAt` is a no-op.
+   */
+  private async pauseIfPrimaryLimitLow(rateLimit: RateLimit): Promise<void> {
+    if (rateLimit.remaining > RATE_LIMIT_REMAINING_THRESHOLD) {
+      return;
+    }
+    const resetMs = Date.parse(rateLimit.resetAt);
+    if (Number.isNaN(resetMs)) {
+      return;
+    }
+    const waitMs = resetMs - this.now();
+    if (waitMs > 0) {
+      await this.sleep(waitMs);
+    }
   }
 
   /**

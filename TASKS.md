@@ -33,9 +33,9 @@ Derived from `SPEC.md`. Check off each task as it lands. Section references (§)
 
 ## 4. Rate-limit handling
 
-- [ ] Read `rateLimit { remaining resetAt }` per page; when near zero, `await Bun.sleep(resetAt - now)` and resume the same run (§2.6, §11.5).
-- [ ] Honor `403`/`429` with `Retry-After` header (secondary limits) by pausing and resuming (§11.5).
-- [ ] Fail the run only after repeated exhaustion (§2.6).
+- [X] Read `rateLimit { remaining resetAt }` per page; when near zero, `await Bun.sleep(resetAt - now)` and resume the same run (§2.6, §11.5).
+- [X] Honor `403`/`429` with `Retry-After` header (secondary limits) by pausing and resuming (§11.5).
+- [X] Fail the run only after repeated exhaustion (§2.6).
 
 ## 5. Time-to-merge computation
 
