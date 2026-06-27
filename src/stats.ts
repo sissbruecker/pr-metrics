@@ -6,12 +6,18 @@
  * a SQLite primitive, and the category rules live in app code, so the
  * aggregation cannot be pushed into SQL.)
  *
+ * Time-to-merge is computed HERE, in memory, from each row's stored
+ * `ready_for_review_at` + `merged_at` (via `computeTtmSeconds` from `src/ttm.ts`)
+ * rather than read from a precomputed column. The DB stores only the raw inputs,
+ * so changing the TTM definition (or adding a new derived metric) takes effect on
+ * the next read with no database recompute or re-sync.
+ *
  * The flow is:
  *   1. Compute the trailing-12-month window start from `now`.
  *   2. Run ONE parameterized query for the rows merged within that window.
- *   3. Bucket each row by month (`YYYY-MM`) and by derived category, then
- *      compute count / median / mean per `(month, category)` group and a
- *      per-month "All" total across categories.
+ *   3. Derive each row's TTM, then bucket by month (`YYYY-MM`) and by derived
+ *      category, computing count / median / mean per `(month, category)` group
+ *      and a per-month "All" total across categories.
  *
  * The aggregation is kept pure (it takes rows in, not a database) so it can be
  * tested without SQLite. The thin `fetchStatsRows` reader runs the query, and
@@ -25,10 +31,11 @@
  * - Mean is the arithmetic mean, also unrounded.
  * - `count` reflects every PR merged that month (in that category, or all),
  *   including PRs flagged as having an approximate TTM. Median/mean are
- *   computed over the non-null `ttm_seconds` values only; a null `ttm_seconds`
- *   still contributes to `count` but is excluded from the median/mean inputs.
- *   In practice every merged PR has a `ttm_seconds`, so this is defensive — but
- *   it keeps `count` honest as "PRs merged" regardless of TTM availability.
+ *   computed over the non-null derived TTM values only; a null TTM (no usable
+ *   `ready_for_review_at`) still contributes to `count` but is excluded from the
+ *   median/mean inputs. In practice every merged PR has a usable TTM, so this is
+ *   defensive — but it keeps `count` honest as "PRs merged" regardless of TTM
+ *   availability.
  * - Empty groups (a month with no PRs, or a category with no PRs that month)
  *   report `count: 0` and `median: null` / `mean: null` — the "blank" the UI
  *   renders. All 12 months are always present and ordered, and every category
@@ -42,6 +49,7 @@ import type { Database } from "bun:sqlite";
 import { categorize, CATEGORIES, type Category } from "./categorize.ts";
 import { DEFAULT_TTM_THRESHOLD_DAYS } from "./config.ts";
 import { filterRows } from "./filter.ts";
+import { computeTtmSeconds } from "./ttm.ts";
 
 /** Seconds in one day, for converting day-denominated thresholds. */
 export const SECONDS_PER_DAY = 86400;
@@ -50,8 +58,12 @@ export const SECONDS_PER_DAY = 86400;
 export interface StatsRow {
   /** ISO 8601 UTC text, e.g. `2026-06-15T09:00:00Z`. */
   merged_at: string;
-  /** Precomputed time-to-merge in seconds; null only in defensive cases. */
-  ttm_seconds: number | null;
+  /**
+   * TTM measurement start point (ISO 8601 UTC text). The time-to-merge is
+   * derived in memory from this and `merged_at`; null only in defensive cases
+   * (a merged PR always has one in practice), which yields a null TTM.
+   */
+  ready_for_review_at: string | null;
   /** `0`/`1` — whether the TTM is an approximation. */
   ttm_is_approximate: number;
   /** Raw PR title, used to derive the category. */
@@ -62,9 +74,9 @@ export interface StatsRow {
 export interface BucketStats {
   /** PRs merged in this bucket (includes approximate-TTM PRs). */
   count: number;
-  /** Median TTM in seconds over non-null `ttm_seconds`, or null when none. */
+  /** Median TTM in seconds over non-null derived TTMs, or null when none. */
   median: number | null;
-  /** Mean TTM in seconds over non-null `ttm_seconds`, or null when none. */
+  /** Mean TTM in seconds over non-null derived TTMs, or null when none. */
   mean: number | null;
 }
 
@@ -94,7 +106,7 @@ export interface StatsResult {
   /** Total number of approximate-TTM PRs in the window (for a footnote). */
   approximateCount: number;
   /**
-   * Number of PRs in the window dropped as outliers because their `ttm_seconds`
+   * Number of PRs in the window dropped as outliers because their derived TTM
    * exceeded `ttmThresholdSeconds` (for a footnote). Excluded PRs count toward
    * neither `count` nor median/mean nor `approximateCount`.
    */
@@ -179,11 +191,12 @@ function emptyByCategory(): Record<Category, BucketStats> {
  * category in `CATEGORIES` per month (empty → count 0, null median/mean). Also
  * returns the total count of approximate-TTM rows.
  *
- * Rows whose `ttm_seconds` exceeds `thresholdSeconds` are treated as outliers
- * and dropped entirely — they contribute to neither `count` nor median/mean nor
- * `approximateCount`, but are tallied in `excludedCount`. Rows with a null
- * `ttm_seconds` have no TTM to exceed the threshold and are never excluded.
- * `thresholdSeconds` defaults to `Infinity` (no filtering).
+ * The TTM is derived per row (from `ready_for_review_at` + `merged_at`); rows
+ * whose derived TTM exceeds `thresholdSeconds` are treated as outliers and
+ * dropped entirely — they contribute to neither `count` nor median/mean nor
+ * `approximateCount`, but are tallied in `excludedCount`. Rows with a null TTM
+ * have nothing to exceed the threshold and are never excluded. `thresholdSeconds`
+ * defaults to `Infinity` (no filtering).
  *
  * The "All" total is computed over ALL rows merged that month regardless of
  * category — it is NOT the sum of the per-category medians.
@@ -227,9 +240,17 @@ export function aggregate(
     const month = row.merged_at.slice(0, 7);
     if (!monthSet.has(month)) continue;
 
+    // Derive the TTM in memory from the stored start point + merge time. Null
+    // when there is no usable start point (defensive — merged PRs always have
+    // one in practice).
+    const ttmSeconds =
+      row.ready_for_review_at === null
+        ? null
+        : computeTtmSeconds(row.ready_for_review_at, row.merged_at);
+
     // Drop outliers entirely: a too-large TTM contributes to nothing but the
     // excluded tally. A null TTM has nothing to compare and is never excluded.
-    if (row.ttm_seconds !== null && row.ttm_seconds > thresholdSeconds) {
+    if (ttmSeconds !== null && ttmSeconds > thresholdSeconds) {
       excludedCount += 1;
       continue;
     }
@@ -248,10 +269,10 @@ export function aggregate(
     acc.allCount += 1;
     acc.catCount[category] += 1;
 
-    // median/mean inputs exclude null ttm_seconds.
-    if (row.ttm_seconds !== null) {
-      acc.allTtms.push(row.ttm_seconds);
-      acc.catTtms[category].push(row.ttm_seconds);
+    // median/mean inputs exclude null TTMs.
+    if (ttmSeconds !== null) {
+      acc.allTtms.push(ttmSeconds);
+      acc.catTtms[category].push(ttmSeconds);
     }
   }
 
@@ -293,7 +314,7 @@ export function fetchStatsRows(
   windowStart: string,
 ): StatsRow[] {
   const stmt = db.query<StatsRow, [number, string]>(
-    `SELECT merged_at, ttm_seconds, ttm_is_approximate, title
+    `SELECT merged_at, ready_for_review_at, ttm_is_approximate, title
        FROM pull_requests
       WHERE repo_id = ?
         AND merged_at >= ?

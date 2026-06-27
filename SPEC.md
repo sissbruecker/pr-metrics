@@ -90,7 +90,7 @@ The clock starts when the PR became ready for review (i.e. excluding time it sat
 ### 3.3 Notes
 
 - Draft/ready transition timestamps are **stored raw** alongside the PR. This lets us later switch the definition (e.g. to "first transition" or "created → merged") without re-syncing.
-- The computed `time_to_merge_seconds` is stored on the PR for fast querying, but is always derivable from the stored timestamps.
+- The time-to-merge duration itself is **not stored** — it is **derived in memory at read time** from the stored `ready_for_review_at` + `merged_at` during aggregation (§7.1). Only raw, sync-time facts live in the DB. This mirrors the categorization principle (§6.1): changing the TTM definition — or adding a new derived metric — is a **code change that takes effect on the next read**, with no stored value to migrate and no re-sync. (The `ready_for_review_at` start point *is* stored, since resolving it uses sync-time draft state not otherwise retained; it is a sync-time fact, not part of the duration definition.)
 
 ---
 
@@ -114,7 +114,7 @@ SQLite. Conventions:
 
 - **Timestamps** are stored as **ISO 8601 UTC text** (e.g. `2026-06-26T14:30:00Z`). Sortable as text, no timezone ambiguity. Month bucketing uses `substr(merged_at, 1, 7)` → `'2026-06'` at query time (cheap string slice, no per-row date conversion).
 - **Many-valued metadata** (labels, reviewers, etc.) and **draft/ready transitions** are stored as **JSON text** columns on the PR row. Categorization needs only `title` today; `json_each`/`->>` remains available if a future rule needs labels.
-- **Durations** (`ttm_seconds`) are precomputed integers, so aggregation never re-parses timestamps.
+- **Only raw, sync-time facts are stored.** Derived durations (time-to-merge) are **not** persisted — they are computed in memory at aggregation time (§3.3, §7.1) from the stored timestamps, so a change to the metric definition needs no stored column rewritten and no re-sync.
 
 ### `repos`
 
@@ -141,8 +141,7 @@ SQLite. Conventions:
 | title, body, author, url | TEXT | |
 | created_at, merged_at, closed_at, updated_at | TEXT | ISO 8601 UTC |
 | first_review_at | TEXT | ISO; nullable |
-| ready_for_review_at | TEXT | computed TTM start point (§3) |
-| ttm_seconds | INTEGER | computed, stored for speed |
+| ready_for_review_at | TEXT | computed TTM start point (§3); the duration itself is **not** stored — derived at read time (§3.3, §7.1) |
 | ttm_is_approximate | INTEGER | 0/1 flag |
 | was_ever_draft | INTEGER | 0/1 |
 | base_branch, head_branch | TEXT | |
@@ -214,14 +213,14 @@ The DB does a single cheap **filtered fetch**; the app does the bucketing, categ
 The one query the UI runs:
 
 ```sql
-SELECT merged_at, ttm_seconds, ttm_is_approximate, title
+SELECT merged_at, ready_for_review_at, ttm_is_approximate, title
 FROM pull_requests
 WHERE repo_id = :repo
   AND merged_at >= :window_start      -- 1st day of (current month − 11), ISO UTC text
 ORDER BY merged_at;
 ```
 
-The fetched rows first pass through an **exclusion filter** (§7.6) that drops PRs which should not count at all. For each surviving row the app then derives the **month** (`substr(merged_at,1,7)`) and the **category** (title-prefix rule), and accumulates per bucket.
+The fetched rows first pass through an **exclusion filter** (§7.6) that drops PRs which should not count at all. For each surviving row the app then derives the **time-to-merge** (from `ready_for_review_at` + `merged_at`, per §3 — the duration is computed here, not read from a column), the **month** (`substr(merged_at,1,7)`), and the **category** (title-prefix rule), and accumulates per bucket.
 
 ### 7.2 Window
 
@@ -247,7 +246,7 @@ For each `(month, category)` group, and for the per-month **"All"** total across
 A configurable threshold drops time-to-merge **outliers** — PRs that sat open far longer than normal (weeks/months) and distort the mean (and, to a lesser degree, the median).
 
 - **Default 7 days.** Overridable per request from the UI (§8) and via the `PR_STATS_TTM_THRESHOLD_DAYS` env var, which sets the server-side default the UI starts from.
-- A PR whose `ttm_seconds` **exceeds** the threshold is excluded **entirely** — it counts toward neither `count` nor median/mean nor the approximate tally (§7.4). A PR exactly **at** the threshold is kept. A PR with a null `ttm_seconds` has no TTM to compare and is never excluded.
+- A PR whose **derived TTM** (§7.1) **exceeds** the threshold is excluded **entirely** — it counts toward neither `count` nor median/mean nor the approximate tally (§7.4). A PR exactly **at** the threshold is kept. A PR with a null TTM (no usable start point) has no TTM to compare and is never excluded.
 - Applied **in app code** after the §7.1 fetch (the query itself is unchanged), in the same pass that buckets and computes the math.
 - The number of PRs excluded in the window is reported alongside the stats (for a footnote, §8.4), as is the threshold actually applied (so the UI control can reflect the configured default).
 - The cap is **always on**: the UI input is a required integer number of days (≥ 1); there is no "show everything" mode.
@@ -289,7 +288,7 @@ Only one metric fits legibly per category, so the view shows a single metric cho
 
 ### 8.4 Display
 
-- Durations formatted human-readably (e.g. `2d 4h`, `6h 30m`); stored as seconds.
+- Durations formatted human-readably (e.g. `2d 4h`, `6h 30m`); computed in seconds (§3.3).
 - Footnote: count of PRs **excluded as outliers** (§7.5) and count of **approximate-TTM** PRs (§7.4) in the window.
 
 ---
@@ -420,7 +419,7 @@ timelineItems(first: 100, itemTypes: [READY_FOR_REVIEW_EVENT, CONVERT_TO_DRAFT_E
 - Multi-repo aggregation — UI is single-repo for now; the aggregate-into-one model is designed for but not built.
 - Configurable time window — fixed to trailing 12 months for now (§7.2).
 - Business-hours-aware TTM — deferred; current metric is wall-clock. Raw timestamps are retained so it can be added later.
-- Alternative TTM definitions (first transition, created → merged) — supported by stored data, not exposed in UI yet.
+- Alternative TTM definitions (first transition, created → merged) — supported by the stored raw timestamps and the read-time computation (§3.3); a definition change is code-only with no re-sync, just not exposed in the UI yet.
 - Tail percentiles (p75/p90) — easy to add to the in-memory aggregation (§7.3), not surfaced yet.
 - Automated/scheduled sync — manual only for now.
 - "Refresh PRs merged in the last N days" pass to pick up post-merge metadata edits (§2.7) — deferred.

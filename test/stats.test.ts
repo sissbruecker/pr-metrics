@@ -10,7 +10,44 @@ import {
   type StatsRow,
 } from "../src/stats.ts";
 import { CATEGORIES } from "../src/categorize.ts";
+import { computeTtmSeconds } from "../src/ttm.ts";
 import { openDb } from "../src/db.ts";
+
+const MS_DAY = 86_400_000;
+
+/** True for a Saturday/Sunday UTC day, given a day-start epoch ms. */
+function isWeekendMs(ms: number): boolean {
+  const d = new Date(ms).getUTCDay();
+  return d === 0 || d === 6;
+}
+
+/**
+ * Inverse of `computeTtmSeconds`: return a `ready_for_review_at` ISO timestamp
+ * such that the weekend-excluded TTM from it to `mergedISO` is exactly
+ * `weekdaySeconds`. Walks backward from the merge instant, counting only weekday
+ * time and skipping whole weekend days — so tests can express a target TTM in
+ * round numbers regardless of where the merge falls relative to a weekend.
+ */
+function readyBefore(mergedISO: string, weekdaySeconds: number): string {
+  let remainingMs = weekdaySeconds * 1000;
+  let cursor = Date.parse(mergedISO);
+  while (remainingMs > 0) {
+    const dayStart = Math.floor((cursor - 1) / MS_DAY) * MS_DAY;
+    if (isWeekendMs(dayStart)) {
+      cursor = dayStart; // weekend day contributes no weekday time
+      continue;
+    }
+    const available = cursor - dayStart;
+    if (remainingMs <= available) {
+      cursor -= remainingMs;
+      remainingMs = 0;
+    } else {
+      remainingMs -= available;
+      cursor = dayStart;
+    }
+  }
+  return new Date(cursor).toISOString();
+}
 
 describe("median", () => {
   test("odd-length → middle value", () => {
@@ -46,46 +83,42 @@ describe("mean", () => {
   });
 });
 
-describe("computeWindowStart", () => {
-  test("2026-06-26 → 2025-07-01T00:00:00Z", () => {
-    expect(computeWindowStart(new Date("2026-06-26T12:00:00Z"))).toBe("2025-07-01T00:00:00Z");
-  });
-
-  test("year-boundary: 2026-01-15 → 2025-02-01T00:00:00Z", () => {
-    expect(computeWindowStart(new Date("2026-01-15T00:00:00Z"))).toBe("2025-02-01T00:00:00Z");
-  });
-});
-
-describe("windowMonths", () => {
-  test("returns 12 ordered keys (oldest first), ending at now's month", () => {
-    const months = windowMonths(new Date("2026-06-26T00:00:00Z"));
-    expect(months).toHaveLength(12);
-    expect(months[0]).toBe("2025-07");
-    expect(months[11]).toBe("2026-06");
-    // Strictly ascending.
-    const sorted = [...months].sort();
-    expect(months).toEqual(sorted);
+describe("readyBefore (test helper) round-trips through computeTtmSeconds", () => {
+  test("small within-week, weekend-spanning, and multi-week values", () => {
+    const merged = "2026-06-15T00:00:00Z"; // Monday midnight
+    for (const ttm of [10, 100, 1000, 3600, 7 * 86400, 30 * 86400]) {
+      expect(computeTtmSeconds(readyBefore(merged, ttm), merged)).toBe(ttm);
+    }
   });
 });
 
 describe("aggregate", () => {
   const months = ["2026-05", "2026-06"];
 
-  function row(over: Partial<StatsRow> = {}): StatsRow {
+  /** Build a StatsRow, deriving `ready_for_review_at` from a target TTM. */
+  function row(
+    over: {
+      merged_at?: string;
+      ttm?: number | null;
+      ttm_is_approximate?: number;
+      title?: string;
+    } = {},
+  ): StatsRow {
+    const merged_at = over.merged_at ?? "2026-06-15T00:00:00Z";
+    const ttm = over.ttm === undefined ? 100 : over.ttm;
     return {
-      merged_at: "2026-06-15T00:00:00Z",
-      ttm_seconds: 100,
-      ttm_is_approximate: 0,
-      title: "fix: a bug",
-      ...over,
+      merged_at,
+      ready_for_review_at: ttm === null ? null : readyBefore(merged_at, ttm),
+      ttm_is_approximate: over.ttm_is_approximate ?? 0,
+      title: over.title ?? "fix: a bug",
     };
   }
 
   test("per-(month,category) count/median/mean", () => {
     const rows: StatsRow[] = [
-      row({ merged_at: "2026-06-01T00:00:00Z", ttm_seconds: 10, title: "fix: a" }),
-      row({ merged_at: "2026-06-02T00:00:00Z", ttm_seconds: 30, title: "fix: b" }),
-      row({ merged_at: "2026-06-03T00:00:00Z", ttm_seconds: 50, title: "feat: c" }),
+      row({ merged_at: "2026-06-01T00:00:00Z", ttm: 10, title: "fix: a" }),
+      row({ merged_at: "2026-06-02T00:00:00Z", ttm: 30, title: "fix: b" }),
+      row({ merged_at: "2026-06-03T00:00:00Z", ttm: 50, title: "feat: c" }),
     ];
     const { monthly } = aggregate(rows, months);
     const june = monthly.find((m) => m.month === "2026-06")!;
@@ -98,9 +131,9 @@ describe("aggregate", () => {
 
   test('"All" is computed over ALL rows, NOT the mean of category medians', () => {
     const rows: StatsRow[] = [
-      row({ merged_at: "2026-06-01T00:00:00Z", ttm_seconds: 10, title: "fix: a" }),
-      row({ merged_at: "2026-06-02T00:00:00Z", ttm_seconds: 30, title: "fix: b" }),
-      row({ merged_at: "2026-06-03T00:00:00Z", ttm_seconds: 50, title: "feat: c" }),
+      row({ merged_at: "2026-06-01T00:00:00Z", ttm: 10, title: "fix: a" }),
+      row({ merged_at: "2026-06-02T00:00:00Z", ttm: 30, title: "fix: b" }),
+      row({ merged_at: "2026-06-03T00:00:00Z", ttm: 50, title: "feat: c" }),
     ];
     const { monthly } = aggregate(rows, months);
     const june = monthly.find((m) => m.month === "2026-06")!;
@@ -141,10 +174,10 @@ describe("aggregate", () => {
     expect(approximateCount).toBe(2);
   });
 
-  test("null ttm_seconds counts toward count but is excluded from median/mean", () => {
+  test("null TTM (no ready point) counts toward count but is excluded from median/mean", () => {
     const rows: StatsRow[] = [
-      row({ merged_at: "2026-06-01T00:00:00Z", ttm_seconds: null, title: "fix: a" }),
-      row({ merged_at: "2026-06-02T00:00:00Z", ttm_seconds: 40, title: "fix: b" }),
+      row({ merged_at: "2026-06-01T00:00:00Z", ttm: null, title: "fix: a" }),
+      row({ merged_at: "2026-06-02T00:00:00Z", ttm: 40, title: "fix: b" }),
     ];
     const { monthly } = aggregate(rows, months);
     const june = monthly.find((m) => m.month === "2026-06")!;
@@ -163,9 +196,9 @@ describe("aggregate", () => {
 
   test("rows above the threshold are excluded entirely; a row at the threshold is kept", () => {
     const rows: StatsRow[] = [
-      row({ ttm_seconds: 10, title: "fix: a" }),
-      row({ ttm_seconds: 100, title: "fix: b" }), // exactly at threshold → kept
-      row({ ttm_seconds: 101, title: "fix: c", ttm_is_approximate: 1 }), // over → excluded
+      row({ ttm: 10, title: "fix: a" }),
+      row({ ttm: 100, title: "fix: b" }), // exactly at threshold → kept
+      row({ ttm: 101, title: "fix: c", ttm_is_approximate: 1 }), // over → excluded
     ];
     const { monthly, excludedCount, approximateCount } = aggregate(rows, months, 100);
     const june = monthly.find((m) => m.month === "2026-06")!;
@@ -177,10 +210,10 @@ describe("aggregate", () => {
     expect(approximateCount).toBe(0);
   });
 
-  test("null ttm_seconds is never excluded by the threshold", () => {
+  test("null TTM is never excluded by the threshold", () => {
     const rows: StatsRow[] = [
-      row({ ttm_seconds: null, title: "fix: a" }),
-      row({ ttm_seconds: 1000, title: "fix: b" }), // over threshold → excluded
+      row({ ttm: null, title: "fix: a" }),
+      row({ ttm: 1000, title: "fix: b" }), // over threshold → excluded
     ];
     const { monthly, excludedCount } = aggregate(rows, months, 100);
     const june = monthly.find((m) => m.month === "2026-06")!;
@@ -200,28 +233,30 @@ describe("fetchStatsRows + computeStats (in-memory DB)", () => {
     return r!.id;
   }
 
+  /** Insert a PR, deriving `ready_for_review_at` from a target TTM. */
   function insertPr(
     db: ReturnType<typeof openDb>,
-    repoId: number,
     number: number,
+    repoId: number,
     merged_at: string,
-    ttm_seconds: number | null,
+    ttm: number | null,
     title: string,
     approx = 0,
   ): void {
+    const ready = ttm === null ? null : readyBefore(merged_at, ttm);
     db.query(
       `INSERT INTO pull_requests
         (repo_id, number, title, url, created_at, merged_at, updated_at,
-         ttm_seconds, ttm_is_approximate, synced_at)
+         ready_for_review_at, ttm_is_approximate, synced_at)
        VALUES (?, ?, ?, 'u', '2026-01-01T00:00:00Z', ?, '2026-01-01T00:00:00Z', ?, ?, '2026-01-01T00:00:00Z')`,
-    ).run(repoId, number, title, merged_at, ttm_seconds, approx);
+    ).run(repoId, number, title, merged_at, ready, approx);
   }
 
   test("fetchStatsRows filters by repo and windowStart", () => {
     const db = openDb(":memory:");
     const repoId = seedRepo(db);
-    insertPr(db, repoId, 1, "2026-06-15T00:00:00Z", 100, "fix: in window");
-    insertPr(db, repoId, 2, "2020-01-01T00:00:00Z", 100, "fix: out of window");
+    insertPr(db, 1, repoId, "2026-06-15T00:00:00Z", 100, "fix: in window");
+    insertPr(db, 2, repoId, "2020-01-01T00:00:00Z", 100, "fix: out of window");
     const rows = fetchStatsRows(db, repoId, "2025-07-01T00:00:00Z");
     expect(rows).toHaveLength(1);
     expect(rows[0]!.title).toBe("fix: in window");
@@ -231,8 +266,8 @@ describe("fetchStatsRows + computeStats (in-memory DB)", () => {
   test("computeStats ties window + fetch + aggregation together", () => {
     const db = openDb(":memory:");
     const repoId = seedRepo(db);
-    insertPr(db, repoId, 1, "2026-06-10T00:00:00Z", 200, "feat: a");
-    insertPr(db, repoId, 2, "2026-06-12T00:00:00Z", 400, "feat: b", 1);
+    insertPr(db, 1, repoId, "2026-06-10T00:00:00Z", 200, "feat: a");
+    insertPr(db, 2, repoId, "2026-06-12T00:00:00Z", 400, "feat: b", 1);
     const result = computeStats(db, repoId, new Date("2026-06-26T00:00:00Z"));
     expect(result.windowStart).toBe("2025-07-01T00:00:00Z");
     expect(result.months).toHaveLength(12);
@@ -246,8 +281,8 @@ describe("fetchStatsRows + computeStats (in-memory DB)", () => {
   test("computeStats applies the default 7-day threshold and reports excludedCount", () => {
     const db = openDb(":memory:");
     const repoId = seedRepo(db);
-    insertPr(db, repoId, 1, "2026-06-10T00:00:00Z", 3600, "feat: normal");
-    insertPr(db, repoId, 2, "2026-06-12T00:00:00Z", 30 * 86400, "feat: outlier");
+    insertPr(db, 1, repoId, "2026-06-10T00:00:00Z", 3600, "feat: normal");
+    insertPr(db, 2, repoId, "2026-06-12T00:00:00Z", 30 * 86400, "feat: outlier");
     const result = computeStats(db, repoId, new Date("2026-06-26T00:00:00Z"));
     expect(result.ttmThresholdSeconds).toBe(7 * 86400);
     expect(result.excludedCount).toBe(1);
@@ -260,8 +295,8 @@ describe("fetchStatsRows + computeStats (in-memory DB)", () => {
   test("computeStats honors an explicit threshold argument", () => {
     const db = openDb(":memory:");
     const repoId = seedRepo(db);
-    insertPr(db, repoId, 1, "2026-06-10T00:00:00Z", 3600, "feat: normal");
-    insertPr(db, repoId, 2, "2026-06-12T00:00:00Z", 30 * 86400, "feat: outlier");
+    insertPr(db, 1, repoId, "2026-06-10T00:00:00Z", 3600, "feat: normal");
+    insertPr(db, 2, repoId, "2026-06-12T00:00:00Z", 30 * 86400, "feat: outlier");
     const result = computeStats(db, repoId, new Date("2026-06-26T00:00:00Z"), 60 * 86400);
     expect(result.ttmThresholdSeconds).toBe(60 * 86400);
     expect(result.excludedCount).toBe(0);

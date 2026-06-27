@@ -2,7 +2,10 @@
  * Sync engine.
  *
  * Fetches pull requests merged since the last sync for a single repository,
- * computes their time-to-merge metrics, and upserts them into the database.
+ * resolves the draft-aware `ready_for_review_at` start point, and upserts them
+ * into the database. The time-to-merge duration itself is NOT computed or stored
+ * here — it is derived in memory at read time from the stored timestamps (see
+ * `src/stats.ts`), so the metric definition can change without re-syncing.
  *
  * Cursoring is on *merge time*: each run fetches PRs with `merged_at >= cursor`,
  * where the cursor is the repo's `backfill_start` on the first sync and its
@@ -126,14 +129,14 @@ const UPSERT_SQL = `
 INSERT INTO pull_requests (
   repo_id, number, title, body, author, url,
   created_at, merged_at, closed_at, updated_at,
-  first_review_at, ready_for_review_at, ttm_seconds, ttm_is_approximate, was_ever_draft,
+  first_review_at, ready_for_review_at, ttm_is_approximate, was_ever_draft,
   base_branch, head_branch, additions, deletions, changed_files,
   commit_count, review_count, comment_count, milestone,
   labels, assignees, requested_reviewers, draft_events, synced_at
 ) VALUES (
   $repo_id, $number, $title, $body, $author, $url,
   $created_at, $merged_at, $closed_at, $updated_at,
-  $first_review_at, $ready_for_review_at, $ttm_seconds, $ttm_is_approximate, $was_ever_draft,
+  $first_review_at, $ready_for_review_at, $ttm_is_approximate, $was_ever_draft,
   $base_branch, $head_branch, $additions, $deletions, $changed_files,
   $commit_count, $review_count, $comment_count, $milestone,
   $labels, $assignees, $requested_reviewers, $draft_events, $synced_at
@@ -149,7 +152,6 @@ ON CONFLICT(repo_id, number) DO UPDATE SET
   updated_at = excluded.updated_at,
   first_review_at = excluded.first_review_at,
   ready_for_review_at = excluded.ready_for_review_at,
-  ttm_seconds = excluded.ttm_seconds,
   ttm_is_approximate = excluded.ttm_is_approximate,
   was_ever_draft = excluded.was_ever_draft,
   base_branch = excluded.base_branch,
@@ -194,7 +196,6 @@ function toUpsertParams(
     $updated_at: node.updatedAt,
     $first_review_at: ttm.first_review_at,
     $ready_for_review_at: ttm.ready_for_review_at,
-    $ttm_seconds: ttm.ttm_seconds,
     $ttm_is_approximate: ttm.ttm_is_approximate,
     $was_ever_draft: ttm.was_ever_draft,
     $base_branch: node.baseRefName,
