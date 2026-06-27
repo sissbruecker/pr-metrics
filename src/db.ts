@@ -13,6 +13,7 @@
  */
 
 import { Database } from "bun:sqlite";
+import { computeTtmSeconds } from "./ttm.ts";
 
 /** A tracked repository. */
 export interface RepoRow {
@@ -170,8 +171,78 @@ export function initSchema(db: Database): void {
 }
 
 /**
+ * Current data-format version, tracked in SQLite's `PRAGMA user_version`. Bump
+ * this whenever the *definition* of a stored derived value changes so that
+ * `migrate` recomputes existing rows in place — no re-sync required, since the
+ * raw inputs (timestamps, draft history) are persisted alongside the derived
+ * columns.
+ *
+ * History:
+ *   1 — `ttm_seconds` redefined to exclude weekends (was raw wall clock).
+ */
+const DATA_VERSION = 1;
+
+/**
+ * Bring an open database up to {@link DATA_VERSION}, recomputing derived columns
+ * whose definition changed since the version stamped in the file. A fresh DB
+ * (version 0, no rows) is simply stamped to the current version.
+ *
+ * Idempotent and cheap: each step is gated on the stored version, and the whole
+ * thing is a no-op once the file is current.
+ */
+export function migrate(db: Database): void {
+  const version =
+    db.query<{ user_version: number }, []>("PRAGMA user_version").get()
+      ?.user_version ?? 0;
+  if (version >= DATA_VERSION) return;
+
+  // v1: recompute ttm_seconds under the weekend-excluding TTM definition from
+  // the persisted ready_for_review_at + merged_at (see src/ttm.ts).
+  if (version < 1) {
+    recomputeTtm(db);
+  }
+
+  db.exec(`PRAGMA user_version = ${DATA_VERSION}`);
+}
+
+/**
+ * Recompute `ttm_seconds` for every merged PR from its stored
+ * `ready_for_review_at` and `merged_at`, applying the current TTM definition.
+ * Rows missing a `ready_for_review_at` get a null TTM (defensive — merged PRs
+ * always have one in practice). Runs in a single transaction.
+ */
+function recomputeTtm(db: Database): void {
+  const rows = db
+    .query<
+      { id: number; ready_for_review_at: string | null; merged_at: string | null },
+      []
+    >(
+      `SELECT id, ready_for_review_at, merged_at
+         FROM pull_requests
+        WHERE merged_at IS NOT NULL`,
+    )
+    .all();
+
+  const update = db.query<unknown, [number | null, number]>(
+    `UPDATE pull_requests SET ttm_seconds = ? WHERE id = ?`,
+  );
+
+  const apply = db.transaction(() => {
+    for (const row of rows) {
+      const ttm =
+        row.ready_for_review_at === null
+          ? null
+          : computeTtmSeconds(row.ready_for_review_at, row.merged_at);
+      update.run(ttm, row.id);
+    }
+  });
+  apply();
+}
+
+/**
  * Open (creating if necessary) the SQLite database at `path`, enable foreign
- * keys, apply the schema, and return the ready-to-use `Database`.
+ * keys, apply the schema, run any pending data migrations, and return the
+ * ready-to-use `Database`.
  *
  * Pass `":memory:"` for an ephemeral in-memory database.
  */
@@ -180,5 +251,6 @@ export function openDb(path: string): Database {
   db.exec("PRAGMA journal_mode = WAL;");
   db.exec("PRAGMA foreign_keys = ON;");
   initSchema(db);
+  migrate(db);
   return db;
 }

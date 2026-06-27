@@ -4,6 +4,10 @@ Track the time-to-merge of GitHub pull requests across repositories. A local,
 single-user CLI that stores data in a SQLite file and doubles as a query-only
 web UI.
 
+Time-to-merge is measured from when a PR is ready for review to when it merges,
+**excluding weekends** (Saturdays and Sundays, in UTC) so the metric reflects
+elapsed working time rather than wall clock.
+
 ## Requirements
 
 - [Bun](https://bun.sh) (the project is built and run with Bun; it uses
