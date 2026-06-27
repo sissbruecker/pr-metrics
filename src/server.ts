@@ -8,14 +8,16 @@
  *
  * Routes (GET only; any other method → 405):
  *
- *   GET /api/stats?repo=<id>
+ *   GET /api/stats?repo=<id>[&ttmDays=<days>][&categories=<csv>]
  *     Resolve the repo by `repos.id` and return the aggregated trailing-12-month
- *     buckets from `computeStats` as JSON. The response carries BOTH the
- *     per-month "All" totals and the per-category breakdown plus the
- *     approximate-TTM count, so a single request covers every UI view mode (the
- *     UI toggles client-side).
- *       - missing / non-numeric `repo` → 400
- *       - unknown repo id              → 404
+ *     buckets from `computeStats` as JSON: one count / median / mean bucket per
+ *     month plus the approximate-TTM count and the full category list (for the
+ *     UI's category filter). Optional `categories` is a comma-separated subset of
+ *     the known categories; when present, only those categories' PRs feed the
+ *     metric (empty string → none). When absent, all categories are included.
+ *       - missing / non-numeric `repo`      → 400
+ *       - invalid `ttmDays` / `categories`  → 400
+ *       - unknown repo id                   → 404
  *
  *   GET /api/repos
  *     A tiny supporting read endpoint (NOT a second stats endpoint): returns the
@@ -33,6 +35,7 @@
 import type { Database } from "bun:sqlite";
 import { openDb, type RepoRow } from "./db.ts";
 import { computeStats, SECONDS_PER_DAY } from "./stats.ts";
+import { CATEGORIES, type Category } from "./categorize.ts";
 import { DEFAULT_TTM_THRESHOLD_DAYS } from "./config.ts";
 
 // Embed the UI assets into the module. With `with { type: "file" }`, Bun copies
@@ -179,7 +182,23 @@ function handleStats(db: Database, url: URL, defaultThresholdSeconds: number): R
     thresholdSeconds = ttmDays * SECONDS_PER_DAY;
   }
 
-  return json(computeStats(db, repoId, undefined, thresholdSeconds));
+  // Optional category filter, comma-separated. Absent → all categories. An empty
+  // string is a valid "none selected" (yields all-empty months). Any unknown
+  // name is a client error.
+  let includedCategories: Set<Category> | undefined;
+  const categoriesParam = url.searchParams.get("categories");
+  if (categoriesParam !== null) {
+    const names = categoriesParam === "" ? [] : categoriesParam.split(",");
+    const known = new Set<string>(CATEGORIES);
+    for (const name of names) {
+      if (!known.has(name)) {
+        return errorResponse(400, `Unknown category: ${name}`);
+      }
+    }
+    includedCategories = new Set(names as Category[]);
+  }
+
+  return json(computeStats(db, repoId, undefined, thresholdSeconds, includedCategories));
 }
 
 /**

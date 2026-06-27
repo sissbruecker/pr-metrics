@@ -70,29 +70,27 @@ select {
   min-width: 12rem;
 }
 
-.toggle-group {
+.checkbox-group {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem 0.9rem;
+  padding: 0.4rem 0;
+}
+
+.checkbox-group label {
   display: inline-flex;
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  overflow: hidden;
-}
-
-.toggle-group button {
-  border: 0;
-  background: var(--bg);
-  padding: 0.4rem 0.85rem;
+  align-items: center;
+  gap: 0.3rem;
   font-size: 0.9rem;
-  cursor: pointer;
+  font-weight: 400;
+  text-transform: none;
+  letter-spacing: normal;
   color: var(--fg);
+  cursor: pointer;
 }
 
-.toggle-group button + button {
-  border-left: 1px solid var(--border);
-}
-
-.toggle-group button[aria-pressed="true"] {
-  background: var(--accent);
-  color: #fff;
+.checkbox-group input {
+  cursor: pointer;
 }
 
 .chart-wrap {

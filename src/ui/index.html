@@ -12,21 +12,9 @@
     <select id="repo-select"></select>
   </div>
 
-  <div class="control">
-    <span class="control-label">View</span>
-    <div class="toggle-group" id="view-toggle" role="group" aria-label="View mode">
-      <button type="button" data-view="overall" aria-pressed="true">Overall</button>
-      <button type="button" data-view="byCategory" aria-pressed="false">By category</button>
-    </div>
-  </div>
-
-  <div class="control hidden" id="metric-control">
-    <label for="metric-select">Metric</label>
-    <select id="metric-select">
-      <option value="median" selected>Median</option>
-      <option value="mean">Mean</option>
-      <option value="count">Count</option>
-    </select>
+  <div class="control hidden" id="category-filter-control">
+    <span class="control-label">Categories</span>
+    <div class="checkbox-group" id="category-filter" role="group" aria-label="Category filter"></div>
   </div>
 
   <div class="control">

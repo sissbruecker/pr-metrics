@@ -199,8 +199,8 @@ Store raw PR data; **derive categories at query time** via rules. The rules are 
 
 ### 6.4 In the UI
 
-- Data can be shown **combined** (all PRs) or **grouped by category** (a series/column per category).
-- **Uncategorized** is shown as its own group when grouping — never hidden, so totals stay honest.
+- A single metric (count / median / mean) is shown, computed over the PRs whose category is currently **included** via a **category filter** (§8.3).
+- The filter lists **every** category as a checkbox, all enabled by default; **Uncategorized** is one of them — never hidden, so it can always be included in or excluded from the totals.
 
 ---
 
@@ -220,7 +220,7 @@ WHERE repo_id = :repo
 ORDER BY merged_at;
 ```
 
-The fetched rows first pass through an **exclusion filter** (§7.6) that drops PRs which should not count at all. For each surviving row the app then derives the **time-to-merge** (from `ready_for_review_at` + `merged_at`, per §3 — the duration is computed here, not read from a column), the **month** (`substr(merged_at,1,7)`), and the **category** (title-prefix rule), and accumulates per bucket.
+The fetched rows first pass through an **exclusion filter** (§7.6) that drops PRs which should not count at all. For each surviving row the app derives the **category** (title-prefix rule) and, if the request's **category filter** (§8.3) excludes it, drops the row before any further accounting. For each remaining row the app then derives the **time-to-merge** (from `ready_for_review_at` + `merged_at`, per §3 — the duration is computed here, not read from a column) and the **month** (`substr(merged_at,1,7)`), and accumulates per month.
 
 ### 7.2 Window
 
@@ -229,13 +229,13 @@ The fetched rows first pass through an **exclusion filter** (§7.6) that drops P
 
 ### 7.3 Stats per bucket
 
-For each `(month, category)` group, and for the per-month **"All"** total across categories:
+For each month, over the rows whose category is included (§8.3):
 
 - **count** — PRs merged that month
 - **median** TTM — robust to the long right tail
 - **mean** TTM — runs higher than median when a few PRs sit open for weeks
 
-(The in-memory model makes adding p75/p90 later trivial.)
+(The in-memory model makes adding p75/p90 later trivial.) The category filter is applied per row **before** these are accumulated, so the median is computed over the included PRs' raw TTMs — never recombined from per-category medians. Selecting no categories yields all-empty months (count 0, blank median/mean).
 
 ### 7.4 Approximate values
 
@@ -270,21 +270,23 @@ Query-only. Read-only against the SQLite DB; launched via the CLI (§9).
 
 - Pick **one repo**.
 - Window is fixed to the trailing 12 months (§7.2).
-- Toggle between two view modes: **Overall** (default) and **By category**.
-- A **max time-to-merge** input (days, default 7) caps outliers (§7.5); it applies to both view modes, and changing it re-fetches the stats (the cap is applied server-side, so this is not a pure client-side re-render).
+- A **max time-to-merge** input (days, default 7) caps outliers (§7.5); changing it re-fetches the stats (the cap is applied server-side, so this is not a pure client-side re-render).
+- A **category filter** (§8.3) selects which categories' PRs feed the metric.
 
-### 8.2 Overall view (default)
+### 8.2 Metric view
+
+A single always-on view:
 
 - **Table:** 12 month-rows × columns `count`, `median`, `mean`.
 - **Chart:** median & mean plotted as lines over the months. (PR count is read from the table, not drawn on the chart.)
 
-### 8.3 By-category view
+Both reflect only the PRs in the currently included categories (§8.3).
 
-Only one metric fits legibly per category, so the view shows a single metric chosen by a **selector (median / mean / count), defaulting to median**.
+### 8.3 Category filter
 
-- **Table:** months × categories for the selected metric, plus an **"All"** column.
-- **Chart:** one line per category for the selected metric.
-- **Uncategorized** is always shown as its own category — never hidden.
+- A row of checkboxes, **one per category** (including **Uncategorized**), all **enabled by default**.
+- Unchecking a category excludes its PRs from the metric; re-checking includes them again. Unchecking **all** categories leaves the metric empty (count 0, blank median/mean).
+- Because the median cannot be recombined from per-category medians, toggling a checkbox **re-fetches** so the server recomputes over the selected set (server-side, like the max-time-to-merge input) rather than re-rendering client-side. The selection persists across repo and threshold changes.
 
 ### 8.4 Display
 

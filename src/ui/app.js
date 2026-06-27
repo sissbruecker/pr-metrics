@@ -8,11 +8,11 @@
  *   - On load, fetch the tracked repos and populate the selector (auto-selecting
  *     the first). If there are none, show a friendly message.
  *   - On repo change, fetch that repo's trailing-12-month stats and render.
- *   - Two view modes are kept in module state: "overall" (default) and
- *     "byCategory". The by-category view adds a metric selector
- *     (median / mean / count, default median).
- *   - The same fetched `StatsResult` drives both views, so toggling views or
- *     changing the metric re-renders from cached data without re-fetching.
+ *   - A category filter (one checkbox per category, all enabled by default) lets
+ *     the user include/exclude whole categories from the metric. Since the
+ *     median cannot be recombined from per-category medians, toggling a checkbox
+ *     re-fetches with the selected categories so the server recomputes — the same
+ *     way changing the repo or the TTM threshold re-fetches.
  *
  * Chart handling: a single Chart.js instance is created once and then mutated
  * (data + options replaced, `chart.update()`) on every render, rather than
@@ -20,8 +20,8 @@
  *
  * Units: median/mean are stored as SECONDS. On the chart's y-axis they are
  * plotted in HOURS (seconds / 3600) for legible axis numbers; tooltips show the
- * full human-readable duration via formatDuration. The "count" metric is an
- * integer count and is plotted as-is (the axis label switches to "PRs").
+ * full human-readable duration via formatDuration. Count is not charted; it
+ * appears only in the table.
  */
 
 import { formatDuration, BLANK } from "/format.js";
@@ -31,10 +31,13 @@ const SECONDS_PER_DAY = 86400;
 
 // ---- Module state -----------------------------------------------------------
 
-/** @type {"overall" | "byCategory"} */
-let viewMode = "overall";
-/** @type {"median" | "mean" | "count"} */
-let categoryMetric = "median";
+/**
+ * Currently included categories as a Set of category names. null until the
+ * filter is built from the first stats response; thereafter it always reflects
+ * the checkbox state (an empty set means "none selected").
+ * @type {Set<string> | null}
+ */
+let selectedCategories = null;
 /** Latest fetched stats for the selected repo, or null. */
 let currentStats = null;
 /** The single Chart.js instance, created lazily. */
@@ -51,9 +54,8 @@ let lastThresholdDays = 7;
 const els = {
   controls: document.getElementById("controls"),
   repoSelect: document.getElementById("repo-select"),
-  viewToggle: document.getElementById("view-toggle"),
-  metricControl: document.getElementById("metric-control"),
-  metricSelect: document.getElementById("metric-select"),
+  categoryFilterControl: document.getElementById("category-filter-control"),
+  categoryFilter: document.getElementById("category-filter"),
   ttmThreshold: document.getElementById("ttm-threshold"),
   emptyMessage: document.getElementById("empty-message"),
   report: document.getElementById("report"),
@@ -62,15 +64,10 @@ const els = {
   footnote: document.getElementById("footnote"),
 };
 
-// Stable, distinct-ish palette for category lines (cycled if exhausted).
+// Colors for the median / mean lines.
 const PALETTE = [
-  "#2563eb", // blue
-  "#dc2626", // red
-  "#16a34a", // green
-  "#d97706", // amber
-  "#7c3aed", // violet
-  "#0891b2", // cyan
-  "#9ca3af", // gray (Uncategorized tends to land here)
+  "#2563eb", // blue (median)
+  "#dc2626", // red (mean)
 ];
 
 // ---- Helpers ----------------------------------------------------------------
@@ -102,8 +99,8 @@ function tooltipLabel(metric, datasetLabel, rawSeconds) {
 
 // ---- Rendering: tables ------------------------------------------------------
 
-/** Render the Overall table: 12 month rows x count / median / mean. */
-function renderOverallTable(stats) {
+/** Render the table: 12 month rows x count / median / mean. */
+function renderTable(stats) {
   const thead = els.table.tHead;
   const tbody = els.table.tBodies[0];
   thead.innerHTML = "";
@@ -135,43 +132,6 @@ function renderOverallTable(stats) {
   }
 }
 
-/**
- * Render the By-category table: rows = months, columns = each category plus a
- * leading "Month" and a trailing "All" column, for the selected metric.
- */
-function renderCategoryTable(stats, metric) {
-  const thead = els.table.tHead;
-  const tbody = els.table.tBodies[0];
-  thead.innerHTML = "";
-  tbody.innerHTML = "";
-
-  const headRow = thead.insertRow();
-  const headers = ["Month", ...stats.categories, "All"];
-  for (const h of headers) {
-    const th = document.createElement("th");
-    th.textContent = h;
-    headRow.appendChild(th);
-  }
-
-  for (const m of stats.monthly) {
-    const row = tbody.insertRow();
-
-    const monthCell = document.createElement("th");
-    monthCell.scope = "row";
-    monthCell.textContent = m.month;
-    row.appendChild(monthCell);
-
-    for (const cat of stats.categories) {
-      const bucket = m.byCategory[cat];
-      const value = bucket ? bucket[metric] : null;
-      row.insertCell().textContent = formatCell(metric, value);
-    }
-
-    // Trailing "All" column from the per-month all bucket.
-    row.insertCell().textContent = formatCell(metric, m.all[metric]);
-  }
-}
-
 // ---- Rendering: chart -------------------------------------------------------
 
 /** Ensure the single Chart.js instance exists. */
@@ -197,8 +157,8 @@ function ensureChart() {
   return chart;
 }
 
-/** Overall chart: median & mean lines (hours). Count is NOT drawn. */
-function renderOverallChart(stats) {
+/** Chart: median & mean lines (hours). Count is NOT drawn. */
+function renderChart(stats) {
   const c = ensureChart();
   const labels = stats.months;
 
@@ -234,51 +194,14 @@ function renderOverallChart(stats) {
   c.update();
 }
 
-/** By-category chart: one line per category for the selected metric. */
-function renderCategoryChart(stats, metric) {
-  const c = ensureChart();
-  c.data.labels = stats.months;
-  c.data.datasets = stats.categories.map((cat, i) => {
-    const raw = stats.monthly.map((m) => {
-      const bucket = m.byCategory[cat];
-      return bucket ? bucket[metric] : null;
-    });
-    const color = PALETTE[i % PALETTE.length];
-    return {
-      label: cat,
-      data: raw.map((v) => chartValue(metric, v)),
-      _raw: raw,
-      _metric: metric,
-      borderColor: color,
-      backgroundColor: color,
-      tension: 0.2,
-    };
-  });
-  c.options.scales.y.title.text =
-    metric === "count" ? "PRs merged" : "Time to merge (hours)";
-  c.options.plugins.tooltip.callbacks.label = (ctx) => {
-    const ds = ctx.dataset;
-    return tooltipLabel(ds._metric, ds.label, ds._raw[ctx.dataIndex]);
-  };
-  c.update();
-}
-
 // ---- Top-level render -------------------------------------------------------
 
-/** Render the current view from cached stats. */
+/** Render the table + chart from the latest fetched stats. */
 function render() {
   if (!currentStats) return;
 
-  // Show/hide the metric selector (by-category only).
-  els.metricControl.classList.toggle("hidden", viewMode !== "byCategory");
-
-  if (viewMode === "overall") {
-    renderOverallTable(currentStats);
-    renderOverallChart(currentStats);
-  } else {
-    renderCategoryTable(currentStats, categoryMetric);
-    renderCategoryChart(currentStats, categoryMetric);
-  }
+  renderTable(currentStats);
+  renderChart(currentStats);
 
   const ex = currentStats.excludedCount;
   const days = currentStats.ttmThresholdSeconds / SECONDS_PER_DAY;
@@ -312,10 +235,38 @@ function currentThresholdDays() {
   return days;
 }
 
-async function loadStats(repoId, days) {
+/**
+ * Build the category filter checkboxes from the canonical category list, all
+ * checked, and reveal the control. Seeds `selectedCategories` to the full set.
+ */
+function buildCategoryFilter(categories) {
+  selectedCategories = new Set(categories);
+  els.categoryFilter.innerHTML = "";
+  for (const cat of categories) {
+    const label = document.createElement("label");
+    const input = document.createElement("input");
+    input.type = "checkbox";
+    input.value = cat;
+    input.checked = true;
+    label.appendChild(input);
+    label.appendChild(document.createTextNode(cat));
+    els.categoryFilter.appendChild(label);
+  }
+  els.categoryFilterControl.classList.remove("hidden");
+}
+
+/**
+ * Fetch and render stats. `categories` is a Set of category names to include;
+ * when undefined the param is omitted and the server includes all categories
+ * (an empty set sends `categories=`, which the server reads as "none").
+ */
+async function loadStats(repoId, days, categories) {
   let url = `/api/stats?repo=${encodeURIComponent(repoId)}`;
   if (days !== undefined) {
     url += `&ttmDays=${encodeURIComponent(days)}`;
+  }
+  if (categories !== undefined) {
+    url += `&categories=${encodeURIComponent([...categories].join(","))}`;
   }
   const res = await fetch(url);
   if (!res.ok) {
@@ -351,28 +302,22 @@ async function init() {
   }
   els.controls.classList.remove("hidden");
 
-  // Wire up controls.
+  // Wire up controls. Repo and threshold changes re-fetch while preserving the
+  // current category selection.
   els.repoSelect.addEventListener("change", () => {
-    loadStats(els.repoSelect.value, currentThresholdDays());
+    loadStats(els.repoSelect.value, currentThresholdDays(), selectedCategories ?? undefined);
   });
 
   els.ttmThreshold.addEventListener("change", () => {
-    loadStats(els.repoSelect.value, currentThresholdDays());
+    loadStats(els.repoSelect.value, currentThresholdDays(), selectedCategories ?? undefined);
   });
 
-  els.viewToggle.addEventListener("click", (e) => {
-    const btn = e.target.closest("button[data-view]");
-    if (!btn) return;
-    viewMode = btn.dataset.view;
-    for (const b of els.viewToggle.querySelectorAll("button")) {
-      b.setAttribute("aria-pressed", String(b === btn));
-    }
-    render();
-  });
-
-  els.metricSelect.addEventListener("change", () => {
-    categoryMetric = els.metricSelect.value;
-    render();
+  // Toggling a category checkbox re-fetches: median can't be recombined from
+  // per-category medians, so the server recomputes over the selected set.
+  els.categoryFilter.addEventListener("change", () => {
+    const boxes = els.categoryFilter.querySelectorAll('input[type="checkbox"]');
+    selectedCategories = new Set([...boxes].filter((b) => b.checked).map((b) => b.value));
+    loadStats(els.repoSelect.value, currentThresholdDays(), selectedCategories);
   });
 
   // Initial load for the auto-selected first repo. Omit the threshold so the
@@ -382,6 +327,7 @@ async function init() {
   if (currentStats) {
     lastThresholdDays = currentStats.ttmThresholdSeconds / SECONDS_PER_DAY;
     els.ttmThreshold.value = String(lastThresholdDays);
+    buildCategoryFilter(currentStats.categories);
   }
 }
 

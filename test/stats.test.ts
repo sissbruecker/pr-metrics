@@ -114,7 +114,7 @@ describe("aggregate", () => {
     };
   }
 
-  test("per-(month,category) count/median/mean", () => {
+  test("per-month count/median/mean over all rows", () => {
     const rows: StatsRow[] = [
       row({ merged_at: "2026-06-01T00:00:00Z", ttm: 10, title: "fix: a" }),
       row({ merged_at: "2026-06-02T00:00:00Z", ttm: 30, title: "fix: b" }),
@@ -122,46 +122,59 @@ describe("aggregate", () => {
     ];
     const { monthly } = aggregate(rows, months);
     const june = monthly.find((m) => m.month === "2026-06")!;
-    expect(june.byCategory.Fix.count).toBe(2);
-    expect(june.byCategory.Fix.median).toBe(20); // median(10,30)
-    expect(june.byCategory.Fix.mean).toBe(20);
-    expect(june.byCategory.Feature.count).toBe(1);
-    expect(june.byCategory.Feature.median).toBe(50);
-  });
-
-  test('"All" is computed over ALL rows, NOT the mean of category medians', () => {
-    const rows: StatsRow[] = [
-      row({ merged_at: "2026-06-01T00:00:00Z", ttm: 10, title: "fix: a" }),
-      row({ merged_at: "2026-06-02T00:00:00Z", ttm: 30, title: "fix: b" }),
-      row({ merged_at: "2026-06-03T00:00:00Z", ttm: 50, title: "feat: c" }),
-    ];
-    const { monthly } = aggregate(rows, months);
-    const june = monthly.find((m) => m.month === "2026-06")!;
-    // All values: 10, 30, 50. median = 30 (over all rows), mean = 30.
-    // Mean of category medians would be (20 + 50) / 2 = 35 — explicitly NOT this.
+    // All values: 10, 30, 50. median = 30, mean = 30.
     expect(june.all.count).toBe(3);
     expect(june.all.median).toBe(30);
     expect(june.all.mean).toBe(30);
   });
 
-  test("empty month → count 0, null median/mean, ALL categories present", () => {
+  test("includedCategories keeps only the selected categories", () => {
+    const rows: StatsRow[] = [
+      row({ merged_at: "2026-06-01T00:00:00Z", ttm: 10, title: "fix: a" }),
+      row({ merged_at: "2026-06-02T00:00:00Z", ttm: 30, title: "fix: b" }),
+      row({ merged_at: "2026-06-03T00:00:00Z", ttm: 50, title: "feat: c" }),
+    ];
+    const { monthly } = aggregate(rows, months, Infinity, new Set(["Fix"]));
+    const june = monthly.find((m) => m.month === "2026-06")!;
+    // Only the two Fix rows survive: median(10, 30) = 20.
+    expect(june.all.count).toBe(2);
+    expect(june.all.median).toBe(20);
+    expect(june.all.mean).toBe(20);
+  });
+
+  test("an empty includedCategories set yields all-empty months", () => {
+    const rows: StatsRow[] = [
+      row({ merged_at: "2026-06-01T00:00:00Z", ttm: 10, title: "fix: a" }),
+      row({ merged_at: "2026-06-03T00:00:00Z", ttm: 50, title: "feat: c" }),
+    ];
+    const { monthly, approximateCount } = aggregate(rows, months, Infinity, new Set());
+    for (const m of monthly) {
+      expect(m.all).toEqual({ count: 0, median: null, mean: null });
+    }
+    expect(approximateCount).toBe(0);
+  });
+
+  test("an excluded category's outlier does NOT count toward excludedCount", () => {
+    const rows: StatsRow[] = [
+      row({ ttm: 10, title: "fix: a" }),
+      row({ ttm: 1000, title: "chore: noisy outlier" }), // over threshold, but Chore excluded
+    ];
+    const { monthly, excludedCount } = aggregate(rows, months, 100, new Set(["Fix"]));
+    const june = monthly.find((m) => m.month === "2026-06")!;
+    expect(june.all.count).toBe(1); // only the Fix row
+    expect(excludedCount).toBe(0); // the Chore outlier was filtered out before the outlier check
+  });
+
+  test("empty month → count 0, null median/mean", () => {
     const rows: StatsRow[] = [row({ merged_at: "2026-06-10T00:00:00Z" })];
     const { monthly } = aggregate(rows, months);
     const may = monthly.find((m) => m.month === "2026-05")!;
-    expect(may.all.count).toBe(0);
-    expect(may.all.median).toBeNull();
-    expect(may.all.mean).toBeNull();
-    for (const c of CATEGORIES) {
-      expect(may.byCategory[c]).toEqual({ count: 0, median: null, mean: null });
-    }
+    expect(may.all).toEqual({ count: 0, median: null, mean: null });
   });
 
-  test("every month present and every category present per month", () => {
+  test("every month present and ordered", () => {
     const { monthly } = aggregate([], months);
     expect(monthly.map((m) => m.month)).toEqual(months);
-    for (const m of monthly) {
-      expect(Object.keys(m.byCategory).sort()).toEqual([...CATEGORIES].sort());
-    }
   });
 
   test("approximateCount totals ttm_is_approximate === 1 rows", () => {
@@ -181,9 +194,9 @@ describe("aggregate", () => {
     ];
     const { monthly } = aggregate(rows, months);
     const june = monthly.find((m) => m.month === "2026-06")!;
-    expect(june.byCategory.Fix.count).toBe(2);
-    expect(june.byCategory.Fix.median).toBe(40);
-    expect(june.byCategory.Fix.mean).toBe(40);
+    expect(june.all.count).toBe(2);
+    expect(june.all.median).toBe(40);
+    expect(june.all.mean).toBe(40);
   });
 
   test("rows outside the months window are ignored", () => {
@@ -202,9 +215,9 @@ describe("aggregate", () => {
     ];
     const { monthly, excludedCount, approximateCount } = aggregate(rows, months, 100);
     const june = monthly.find((m) => m.month === "2026-06")!;
-    expect(june.byCategory.Fix.count).toBe(2);
-    expect(june.byCategory.Fix.median).toBe(55); // median(10, 100)
-    expect(june.byCategory.Fix.mean).toBe(55);
+    expect(june.all.count).toBe(2);
+    expect(june.all.median).toBe(55); // median(10, 100)
+    expect(june.all.mean).toBe(55);
     expect(excludedCount).toBe(1);
     // The excluded outlier contributes to neither count nor the approximate tally.
     expect(approximateCount).toBe(0);
@@ -217,7 +230,7 @@ describe("aggregate", () => {
     ];
     const { monthly, excludedCount } = aggregate(rows, months, 100);
     const june = monthly.find((m) => m.month === "2026-06")!;
-    expect(june.byCategory.Fix.count).toBe(1); // null kept, 1000 excluded
+    expect(june.all.count).toBe(1); // null kept, 1000 excluded
     expect(excludedCount).toBe(1);
   });
 });
@@ -272,9 +285,28 @@ describe("fetchStatsRows + computeStats (in-memory DB)", () => {
     expect(result.windowStart).toBe("2025-07-01T00:00:00Z");
     expect(result.months).toHaveLength(12);
     const june = result.monthly.find((m) => m.month === "2026-06")!;
-    expect(june.byCategory.Feature.count).toBe(2);
-    expect(june.byCategory.Feature.median).toBe(300);
+    expect(june.all.count).toBe(2);
+    expect(june.all.median).toBe(300);
     expect(result.approximateCount).toBe(1);
+    expect(result.categories).toEqual([...CATEGORIES]);
+    db.close();
+  });
+
+  test("computeStats applies an includedCategories filter", () => {
+    const db = openDb(":memory:");
+    const repoId = seedRepo(db);
+    insertPr(db, 1, repoId, "2026-06-10T00:00:00Z", 200, "feat: a");
+    insertPr(db, 2, repoId, "2026-06-11T00:00:00Z", 400, "fix: b");
+    const result = computeStats(
+      db,
+      repoId,
+      new Date("2026-06-26T00:00:00Z"),
+      undefined,
+      new Set(["Fix"]),
+    );
+    const june = result.monthly.find((m) => m.month === "2026-06")!;
+    expect(june.all.count).toBe(1); // only the Fix PR
+    expect(june.all.median).toBe(400);
     db.close();
   });
 
@@ -287,8 +319,8 @@ describe("fetchStatsRows + computeStats (in-memory DB)", () => {
     expect(result.ttmThresholdSeconds).toBe(7 * 86400);
     expect(result.excludedCount).toBe(1);
     const june = result.monthly.find((m) => m.month === "2026-06")!;
-    expect(june.byCategory.Feature.count).toBe(1); // outlier dropped
-    expect(june.byCategory.Feature.median).toBe(3600);
+    expect(june.all.count).toBe(1); // outlier dropped
+    expect(june.all.median).toBe(3600);
     db.close();
   });
 
@@ -301,7 +333,7 @@ describe("fetchStatsRows + computeStats (in-memory DB)", () => {
     expect(result.ttmThresholdSeconds).toBe(60 * 86400);
     expect(result.excludedCount).toBe(0);
     const june = result.monthly.find((m) => m.month === "2026-06")!;
-    expect(june.byCategory.Feature.count).toBe(2);
+    expect(june.all.count).toBe(2);
     db.close();
   });
 });

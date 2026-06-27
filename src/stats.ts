@@ -15,9 +15,9 @@
  * The flow is:
  *   1. Compute the trailing-12-month window start from `now`.
  *   2. Run ONE parameterized query for the rows merged within that window.
- *   3. Derive each row's TTM, then bucket by month (`YYYY-MM`) and by derived
- *      category, computing count / median / mean per `(month, category)` group
- *      and a per-month "All" total across categories.
+ *   3. Derive each row's TTM, then bucket by month (`YYYY-MM`), computing
+ *      count / median / mean per month over the rows whose derived category is
+ *      currently included (the UI's category filter; all categories by default).
  *
  * The aggregation is kept pure (it takes rows in, not a database) so it can be
  * tested without SQLite. The thin `fetchStatsRows` reader runs the query, and
@@ -36,10 +36,10 @@
  *   median/mean inputs. In practice every merged PR has a usable TTM, so this is
  *   defensive — but it keeps `count` honest as "PRs merged" regardless of TTM
  *   availability.
- * - Empty groups (a month with no PRs, or a category with no PRs that month)
- *   report `count: 0` and `median: null` / `mean: null` — the "blank" the UI
- *   renders. All 12 months are always present and ordered, and every category
- *   in `CATEGORIES` is always present per month, so tables/charts stay stable.
+ * - Empty months (no included PRs that month) report `count: 0` and
+ *   `median: null` / `mean: null` — the "blank" the UI renders. All 12 months
+ *   are always present and ordered, so tables/charts stay stable. Selecting no
+ *   categories yields all-empty months.
  * - Approximate-TTM PRs are INCLUDED in the stats. Separately, the total number
  *   of approximate PRs across the window is reported as `approximateCount` for
  *   a UI footnote.
@@ -80,17 +80,12 @@ export interface BucketStats {
   mean: number | null;
 }
 
-/** Stats for a single month: the per-month "All" total plus per-category. */
+/** Stats for a single month, over the currently included categories. */
 export interface MonthStats {
   /** Month key, `YYYY-MM`, e.g. `2026-06`. */
   month: string;
-  /** Stats across ALL categories for this month. */
+  /** Stats across all included categories for this month. */
   all: BucketStats;
-  /**
-   * Stats per category. Always contains every category in `CATEGORIES`
-   * (in canonical order), with empty categories reported as count 0.
-   */
-  byCategory: Record<Category, BucketStats>;
 }
 
 /** The full aggregated result a JSON endpoint / UI can consume directly. */
@@ -99,7 +94,11 @@ export interface StatsResult {
   windowStart: string;
   /** The 12 month keys (`YYYY-MM`) in chronological order. */
   months: string[];
-  /** Canonical ordered category list (mirrors `CATEGORIES`). */
+  /**
+   * Canonical ordered category list (mirrors `CATEGORIES`). The UI uses it to
+   * build the category filter; it is the full set of selectable categories,
+   * independent of which are currently included.
+   */
   categories: Category[];
   /** One entry per month, in `months` order. */
   monthly: MonthStats[];
@@ -175,21 +174,17 @@ export function windowMonths(now: Date): string[] {
   return months;
 }
 
-/** Build an empty per-category map with every category at count 0. */
-function emptyByCategory(): Record<Category, BucketStats> {
-  const out = {} as Record<Category, BucketStats>;
-  for (const c of CATEGORIES) {
-    out[c] = { count: 0, median: null, mean: null };
-  }
-  return out;
-}
-
 /**
- * Pure aggregation. Buckets `rows` by month (`substr(merged_at, 1, 7)`) and by
- * derived category, then computes count / median / mean per `(month, category)`
- * and a per-month "All" total. Always emits all `months` in order and every
- * category in `CATEGORIES` per month (empty → count 0, null median/mean). Also
- * returns the total count of approximate-TTM rows.
+ * Pure aggregation. Buckets `rows` by month (`substr(merged_at, 1, 7)`) and
+ * computes count / median / mean per month over the rows whose derived category
+ * is included. Always emits all `months` in order (empty → count 0, null
+ * median/mean). Also returns the total count of approximate-TTM rows.
+ *
+ * `includedCategories` is the category filter: when provided, a row whose
+ * derived category is not in the set is dropped before any other accounting —
+ * it contributes to neither `count`, median/mean, `approximateCount` nor
+ * `excludedCount`. When `undefined` (the default) every category is included.
+ * An empty set therefore yields all-empty months.
  *
  * The TTM is derived per row (from `ready_for_review_at` + `merged_at`); rows
  * whose derived TTM exceeds `thresholdSeconds` are treated as outliers and
@@ -198,9 +193,6 @@ function emptyByCategory(): Record<Category, BucketStats> {
  * have nothing to exceed the threshold and are never excluded. `thresholdSeconds`
  * defaults to `Infinity` (no filtering).
  *
- * The "All" total is computed over ALL rows merged that month regardless of
- * category — it is NOT the sum of the per-category medians.
- *
  * Rows whose month falls outside `months` are ignored (defensive — the query
  * already filters by the window start).
  */
@@ -208,6 +200,7 @@ export function aggregate(
   rows: StatsRow[],
   months: string[],
   thresholdSeconds: number = Infinity,
+  includedCategories?: Set<Category>,
 ): {
   monthly: MonthStats[];
   approximateCount: number;
@@ -215,23 +208,12 @@ export function aggregate(
 } {
   const monthSet = new Set(months);
 
-  // Per-month accumulators: TTM values for "All" and per category.
+  // Per-month accumulators: count and the TTM values feeding median/mean.
   interface Acc {
-    allCount: number;
-    allTtms: number[];
-    catCount: Record<Category, number>;
-    catTtms: Record<Category, number[]>;
+    count: number;
+    ttms: number[];
   }
   const accByMonth = new Map<string, Acc>();
-  const newAcc = (): Acc => {
-    const catCount = {} as Record<Category, number>;
-    const catTtms = {} as Record<Category, number[]>;
-    for (const c of CATEGORIES) {
-      catCount[c] = 0;
-      catTtms[c] = [];
-    }
-    return { allCount: 0, allTtms: [], catCount, catTtms };
-  };
 
   let approximateCount = 0;
   let excludedCount = 0;
@@ -239,6 +221,11 @@ export function aggregate(
   for (const row of rows) {
     const month = row.merged_at.slice(0, 7);
     if (!monthSet.has(month)) continue;
+
+    // Apply the category filter first, so excluded-category rows count toward
+    // nothing — not even the outlier (`excludedCount`) tally below.
+    const category = categorize(row.title);
+    if (includedCategories && !includedCategories.has(category)) continue;
 
     // Derive the TTM in memory from the stored start point + merge time. Null
     // when there is no usable start point (defensive — merged PRs always have
@@ -259,45 +246,24 @@ export function aggregate(
 
     let acc = accByMonth.get(month);
     if (!acc) {
-      acc = newAcc();
+      acc = { count: 0, ttms: [] };
       accByMonth.set(month, acc);
     }
 
-    const category = categorize(row.title);
-
-    // count reflects PRs merged (including approximate / null-ttm rows).
-    acc.allCount += 1;
-    acc.catCount[category] += 1;
-
+    // count reflects PRs merged (including approximate / null-ttm rows);
     // median/mean inputs exclude null TTMs.
-    if (ttmSeconds !== null) {
-      acc.allTtms.push(ttmSeconds);
-      acc.catTtms[category].push(ttmSeconds);
-    }
+    acc.count += 1;
+    if (ttmSeconds !== null) acc.ttms.push(ttmSeconds);
   }
 
   const monthly: MonthStats[] = months.map((month) => {
     const acc = accByMonth.get(month);
     if (!acc) {
-      return { month, all: { count: 0, median: null, mean: null }, byCategory: emptyByCategory() };
-    }
-    const byCategory = {} as Record<Category, BucketStats>;
-    for (const c of CATEGORIES) {
-      const ttms = acc.catTtms[c];
-      byCategory[c] = {
-        count: acc.catCount[c],
-        median: median(ttms),
-        mean: mean(ttms),
-      };
+      return { month, all: { count: 0, median: null, mean: null } };
     }
     return {
       month,
-      all: {
-        count: acc.allCount,
-        median: median(acc.allTtms),
-        mean: mean(acc.allTtms),
-      },
-      byCategory,
+      all: { count: acc.count, median: median(acc.ttms), mean: mean(acc.ttms) },
     };
   });
 
@@ -328,17 +294,25 @@ export function fetchStatsRows(
  * `now` is injected for deterministic windows in tests; defaults to the current
  * time. `thresholdSeconds` is the TTM outlier cap (PRs above it are excluded);
  * it defaults to the 7-day default and is overridden per request by the server.
+ * `includedCategories` is the category filter (see `aggregate`); `undefined`
+ * includes every category.
  */
 export function computeStats(
   db: Database,
   repoId: number,
   now: Date = new Date(),
   thresholdSeconds: number = DEFAULT_TTM_THRESHOLD_DAYS * SECONDS_PER_DAY,
+  includedCategories?: Set<Category>,
 ): StatsResult {
   const windowStart = computeWindowStart(now);
   const months = windowMonths(now);
   const rows = filterRows(fetchStatsRows(db, repoId, windowStart));
-  const { monthly, approximateCount, excludedCount } = aggregate(rows, months, thresholdSeconds);
+  const { monthly, approximateCount, excludedCount } = aggregate(
+    rows,
+    months,
+    thresholdSeconds,
+    includedCategories,
+  );
   return {
     windowStart,
     months,
