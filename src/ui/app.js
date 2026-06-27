@@ -66,9 +66,16 @@ const els = {
 
 // Colors for the median / mean lines.
 const PALETTE = [
-  "#2563eb", // blue (median)
-  "#dc2626", // red (mean)
+  "#3d63dd", // blue (median)
+  "#d9480f", // red (mean)
 ];
+
+// Light fill under the median line (PALETTE[0] at 7% opacity).
+const MEDIAN_AREA = "rgba(61, 99, 221, 0.07)";
+
+// Monospace family for all canvas-rendered text, matching the surrounding UI.
+const MONO_FONT =
+  "'IBM Plex Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace";
 
 // ---- Helpers ----------------------------------------------------------------
 
@@ -146,11 +153,43 @@ function ensureChart() {
       interaction: { mode: "index", intersect: false },
       spanGaps: false, // null values render as gaps
       scales: {
-        y: { beginAtZero: true, title: { display: true, text: "" } },
+        x: {
+          grid: { display: false },
+          border: { color: "#c9cdd3", width: 1.25 },
+          ticks: { color: "#8b919c", font: { family: MONO_FONT, size: 11 } },
+        },
+        y: {
+          beginAtZero: true,
+          grid: { color: "#eceef0", drawTicks: false },
+          border: { display: false },
+          ticks: {
+            color: "#8b919c",
+            font: { family: MONO_FONT, size: 11 },
+            padding: 8,
+          },
+        },
       },
       plugins: {
-        legend: { display: true },
-        tooltip: { callbacks: {} },
+        // The legend lives in the HTML chart header, not on the canvas.
+        legend: { display: false },
+        tooltip: {
+          backgroundColor: "#14161a",
+          titleColor: "#ffffff",
+          titleFont: { family: MONO_FONT, size: 12.5, weight: "600" },
+          bodyColor: "#ffffff",
+          bodyFont: { family: MONO_FONT, size: 11.5 },
+          bodySpacing: 6,
+          footerColor: "#7e848e",
+          footerFont: { family: MONO_FONT, size: 11, weight: "400" },
+          footerMarginTop: 8,
+          padding: 12,
+          cornerRadius: 7,
+          boxWidth: 11,
+          boxHeight: 3,
+          boxPadding: 4,
+          usePointStyle: false,
+          callbacks: {},
+        },
       },
     },
   });
@@ -165,6 +204,15 @@ function renderChart(stats) {
   const medianRaw = stats.monthly.map((m) => m.all.median);
   const meanRaw = stats.monthly.map((m) => m.all.mean);
 
+  // Shared marker styling: a white dot with a colored ring, per the design.
+  const point = {
+    pointRadius: 3,
+    pointHoverRadius: 5,
+    pointBackgroundColor: "#ffffff",
+    pointBorderWidth: 1.75,
+    pointHoverBorderWidth: 1.75,
+  };
+
   c.data.labels = labels;
   c.data.datasets = [
     {
@@ -173,8 +221,12 @@ function renderChart(stats) {
       _raw: medianRaw,
       _metric: "median",
       borderColor: PALETTE[0],
-      backgroundColor: PALETTE[0],
-      tension: 0.2,
+      backgroundColor: MEDIAN_AREA,
+      pointBorderColor: PALETTE[0],
+      borderWidth: 2.25,
+      tension: 0,
+      fill: "origin", // subtle area under the median line
+      ...point,
     },
     {
       label: "Mean",
@@ -183,13 +235,30 @@ function renderChart(stats) {
       _metric: "mean",
       borderColor: PALETTE[1],
       backgroundColor: PALETTE[1],
-      tension: 0.2,
+      pointBorderColor: PALETTE[1],
+      borderWidth: 2.25,
+      tension: 0,
+      fill: false,
+      ...point,
     },
   ];
-  c.options.scales.y.title.text = "Time to merge (hours)";
-  c.options.plugins.tooltip.callbacks.label = (ctx) => {
+
+  const cb = c.options.plugins.tooltip.callbacks;
+  cb.label = (ctx) => {
     const ds = ctx.dataset;
     return tooltipLabel(ds._metric, ds.label, ds._raw[ctx.dataIndex]);
+  };
+  // Render the tooltip swatch in the line color (not the faint area fill).
+  cb.labelColor = (ctx) => ({
+    borderColor: ctx.dataset.borderColor,
+    backgroundColor: ctx.dataset.borderColor,
+    borderRadius: 2,
+  });
+  // Footer: the PR count for the hovered month.
+  cb.footer = (items) => {
+    const i = items[0]?.dataIndex;
+    if (i === undefined) return "";
+    return `${stats.monthly[i].all.count} PRs`;
   };
   c.update();
 }

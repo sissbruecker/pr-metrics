@@ -1,43 +1,100 @@
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link
+  href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600&display=swap"
+  rel="stylesheet"
+/>
 <link rel="stylesheet" href="/styles.css" />
 
-<h1>PR Time-to-Merge Stats</h1>
-<p class="subtitle">
-  Time to merge is measured from when a PR is ready for review to when it
-  merges, <strong>excluding weekends</strong> (Saturdays and Sundays, UTC).
-</p>
+<div class="page">
+  <div class="card">
+    <header class="topbar">
+      <div class="topbar-brand">
+        <span class="topbar-dot"></span>
+        <span class="topbar-name">pr-stats</span>
+        <span class="topbar-path">/ time-to-merge</span>
+      </div>
+      <span class="topbar-meta">Trailing 12 months · UTC</span>
+    </header>
 
-<div id="controls" class="controls hidden">
-  <div class="control">
-    <label for="repo-select">Repository</label>
-    <select id="repo-select"></select>
+    <div class="card-body">
+      <h1>PR Time-to-Merge Stats</h1>
+      <p class="subtitle">
+        Time to merge is measured from when a PR is ready for review to when it
+        merges, <strong>excluding weekends</strong> (Saturdays and Sundays,
+        UTC).
+      </p>
+
+      <div id="controls" class="controls hidden">
+        <div class="control">
+          <label for="repo-select">Repository</label>
+          <div class="select-wrap">
+            <select id="repo-select"></select>
+            <svg
+              class="select-chevron"
+              width="12"
+              height="12"
+              viewBox="0 0 12 12"
+              aria-hidden="true"
+            >
+              <path
+                d="M2.5 4.5 L6 8 L9.5 4.5"
+                fill="none"
+                stroke="#8B919C"
+                stroke-width="1.5"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+              ></path>
+            </svg>
+          </div>
+        </div>
+
+        <div class="control hidden" id="category-filter-control">
+          <span class="control-label">Categories</span>
+          <div
+            class="checkbox-group"
+            id="category-filter"
+            role="group"
+            aria-label="Category filter"
+          ></div>
+        </div>
+
+        <div class="control">
+          <label for="ttm-threshold">Max time to merge (days)</label>
+          <input type="number" id="ttm-threshold" min="1" step="1" value="7" />
+        </div>
+      </div>
+
+      <div id="empty-message" class="message hidden">No repos tracked yet.</div>
+
+      <div id="report" class="hidden">
+        <div class="chart-header">
+          <span class="chart-caption">Time to merge · hours</span>
+          <div class="legend">
+            <span class="legend-item">
+              <span class="legend-swatch legend-swatch--median"></span>Median
+            </span>
+            <span class="legend-item">
+              <span class="legend-swatch legend-swatch--mean"></span>Mean
+            </span>
+          </div>
+        </div>
+
+        <div class="chart-wrap">
+          <canvas id="chart"></canvas>
+        </div>
+
+        <div class="table-scroll">
+          <table id="data-table">
+            <thead></thead>
+            <tbody></tbody>
+          </table>
+        </div>
+
+        <p id="footnote" class="footnote"></p>
+      </div>
+    </div>
   </div>
-
-  <div class="control hidden" id="category-filter-control">
-    <span class="control-label">Categories</span>
-    <div class="checkbox-group" id="category-filter" role="group" aria-label="Category filter"></div>
-  </div>
-
-  <div class="control">
-    <label for="ttm-threshold">Max time to merge (days)</label>
-    <input type="number" id="ttm-threshold" min="1" step="1" value="7" />
-  </div>
-</div>
-
-<div id="empty-message" class="message hidden">No repos tracked yet.</div>
-
-<div id="report" class="hidden">
-  <div class="chart-wrap">
-    <canvas id="chart"></canvas>
-  </div>
-
-  <div class="table-scroll">
-    <table id="data-table">
-      <thead></thead>
-      <tbody></tbody>
-    </table>
-  </div>
-
-  <p id="footnote" class="footnote"></p>
 </div>
 
 <script src="/chart.umd.js"></script>
