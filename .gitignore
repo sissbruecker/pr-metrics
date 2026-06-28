@@ -1,6 +1,9 @@
 .idea
 *.iml
 node_modules
+
+# Local Claude Code settings (per-developer, not shared)
+.claude/settings.local.json
 .playwright-cli
 *.sqlite
 *.sqlite-shm
