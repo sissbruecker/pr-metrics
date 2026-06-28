@@ -8,16 +8,18 @@
  *
  * Routes (GET only; any other method → 405):
  *
- *   GET /api/stats?repo=<id>[&ttmDays=<days>][&categories=<csv>]
+ *   GET /api/stats?repo=<id>[&thresholdDays=<days>][&categories=<csv>]
  *     Resolve the repo by `repos.id` and return the aggregated trailing-12-month
  *     stats from `computeStats` as JSON: per month a shared `count` plus a
- *     `timeToMerge` metric bucket ({median, mean, excludedCount}). Optional
- *     `categories` is a comma-separated subset of
- *     the known categories; when present, only those categories' PRs feed the
- *     metric (empty string → none). When absent, all categories are included.
- *       - missing / non-numeric `repo`      → 400
- *       - invalid `ttmDays` / `categories`  → 400
- *       - unknown repo id                   → 404
+ *     `timeToMerge` and a `timeToFirstReview` metric bucket
+ *     ({median, mean, excludedCount}). Optional `thresholdDays` is the outlier
+ *     cap (in days) shared by every metric. Optional `categories` is a
+ *     comma-separated subset of the known categories; when present, only those
+ *     categories' PRs feed the metrics (empty string → none). When absent, all
+ *     categories are included.
+ *       - missing / non-numeric `repo`           → 400
+ *       - invalid `thresholdDays` / `categories` → 400
+ *       - unknown repo id                        → 404
  *
  *   GET /api/repos
  *     A tiny supporting read endpoint (NOT a second stats endpoint): returns the
@@ -40,7 +42,7 @@ import type { Database } from "bun:sqlite";
 import { openDb, type RepoRow } from "./db.ts";
 import { computeStats, SECONDS_PER_DAY } from "./stats.ts";
 import { CATEGORIES, type Category } from "./categorize.ts";
-import { DEFAULT_TTM_THRESHOLD_DAYS } from "./config.ts";
+import { DEFAULT_OUTLIER_THRESHOLD_DAYS } from "./config.ts";
 
 // Embed the UI assets into the module. With `with { type: "file" }`, Bun copies
 // each asset into a `--compile` standalone binary AND resolves it on disk under
@@ -170,15 +172,19 @@ function handleStats(db: Database, url: URL): Response {
     return errorResponse(404, `Unknown repo id: ${repoId}`);
   }
 
-  // Optional TTM outlier threshold, in days. Absent → use the default cap.
-  let thresholdSeconds = DEFAULT_TTM_THRESHOLD_DAYS * SECONDS_PER_DAY;
-  const ttmDaysParam = url.searchParams.get("ttmDays");
-  if (ttmDaysParam !== null) {
-    const ttmDays = Number(ttmDaysParam);
-    if (!Number.isInteger(ttmDays) || ttmDays < 1) {
-      return errorResponse(400, `Invalid ttmDays: ${ttmDaysParam}. Expected an integer >= 1.`);
+  // Optional outlier threshold, in days, shared by every metric. Absent → use
+  // the default cap.
+  let thresholdSeconds = DEFAULT_OUTLIER_THRESHOLD_DAYS * SECONDS_PER_DAY;
+  const thresholdDaysParam = url.searchParams.get("thresholdDays");
+  if (thresholdDaysParam !== null) {
+    const thresholdDays = Number(thresholdDaysParam);
+    if (!Number.isInteger(thresholdDays) || thresholdDays < 1) {
+      return errorResponse(
+        400,
+        `Invalid thresholdDays: ${thresholdDaysParam}. Expected an integer >= 1.`,
+      );
     }
-    thresholdSeconds = ttmDays * SECONDS_PER_DAY;
+    thresholdSeconds = thresholdDays * SECONDS_PER_DAY;
   }
 
   // Optional category filter, comma-separated. Absent → all categories. An empty

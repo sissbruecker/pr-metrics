@@ -6,13 +6,16 @@
  * fields of a single PR and returns one derived value. This is deliberately
  * the *per-PR* half of the pipeline: aggregation across many PRs (medians,
  * means, grouping, thresholds) lives in `src/stats.ts`. New per-PR measures
- * (e.g. time-to-first-review, review-cycle count, PR size) belong here; anything
- * that summarizes a population of PRs belongs in `stats.ts`.
+ * (e.g. review-cycle count, PR size) belong here; anything that summarizes a
+ * population of PRs belongs in `stats.ts`.
  *
- * The first measure is time-to-merge (TTM). Given a pull request's
- * `ready_for_review_at` start point and `merged_at`, it computes the elapsed
- * time-to-merge in whole seconds, EXCLUDING weekends (Saturdays and Sundays,
- * in UTC).
+ * Two measures live here today, both sharing the same `ready_for_review_at`
+ * start point and the same weekend-exclusion logic:
+ *   - time-to-merge (TTM): `ready_for_review_at` → `merged_at`.
+ *   - time-to-first-review (TTFR): `ready_for_review_at` → `first_review_at`.
+ *
+ * Each computes the elapsed time in whole seconds, EXCLUDING weekends
+ * (Saturdays and Sundays, in UTC).
  *
  * A PR that becomes ready on a Friday afternoon and merges first thing Monday
  * is credited only with the working time at each end, not the ~66h of wall
@@ -98,4 +101,28 @@ export function measureTtmSeconds(
     return null;
   }
   return weekendExcludedSeconds(readyForReviewAt, mergedAt);
+}
+
+/**
+ * Compute whole-second time-to-first-review (TTFR) from `ready_for_review_at` to
+ * `firstReviewAt`, EXCLUDING weekends (see module docs). Returns `null` when the
+ * PR has no review yet (`firstReviewAt` is null) or either timestamp is
+ * unparseable; otherwise a non-negative integer count of weekday seconds.
+ *
+ * A review submitted before the PR became ready (a review on a still-draft PR)
+ * gives an inverted interval, which `weekendExcludedSeconds` reports as 0.
+ */
+export function measureTtfrSeconds(
+  readyForReviewAt: string,
+  firstReviewAt: string | null,
+): number | null {
+  if (firstReviewAt === null) {
+    return null;
+  }
+  const startMs = Date.parse(readyForReviewAt);
+  const reviewMs = Date.parse(firstReviewAt);
+  if (Number.isNaN(startMs) || Number.isNaN(reviewMs)) {
+    return null;
+  }
+  return weekendExcludedSeconds(readyForReviewAt, firstReviewAt);
 }

@@ -127,6 +127,53 @@ describe("GET /api/stats count includes outliers", () => {
   });
 });
 
+describe("GET /api/stats timeToFirstReview", () => {
+  test("the response carries a timeToFirstReview bucket per month", async () => {
+    const { db, repoId } = seed();
+    const handler = createFetchHandler(db);
+    const res = await handler(new Request(`http://x/api/stats?repo=${repoId}`));
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      monthly: {
+        timeToMerge: { median: number | null };
+        timeToFirstReview: { median: number | null; mean: number | null; excludedCount: number };
+      }[];
+    };
+    for (const m of body.monthly) {
+      expect(m.timeToFirstReview).toHaveProperty("median");
+      expect(m.timeToFirstReview).toHaveProperty("mean");
+      expect(m.timeToFirstReview).toHaveProperty("excludedCount");
+    }
+    db.close();
+  });
+});
+
+describe("GET /api/stats thresholdDays param", () => {
+  test("a valid integer is accepted", async () => {
+    const { db, repoId } = seed();
+    const handler = createFetchHandler(db);
+    const res = await handler(
+      new Request(`http://x/api/stats?repo=${repoId}&thresholdDays=3`),
+    );
+    expect(res.status).toBe(200);
+    db.close();
+  });
+
+  test("a non-positive / non-integer value → 400", async () => {
+    const { db, repoId } = seed();
+    const handler = createFetchHandler(db);
+    const zero = await handler(
+      new Request(`http://x/api/stats?repo=${repoId}&thresholdDays=0`),
+    );
+    expect(zero.status).toBe(400);
+    const fractional = await handler(
+      new Request(`http://x/api/stats?repo=${repoId}&thresholdDays=1.5`),
+    );
+    expect(fractional.status).toBe(400);
+    db.close();
+  });
+});
+
 describe("GET /api/categories", () => {
   test("returns the canonical category list", async () => {
     const { db } = seed();

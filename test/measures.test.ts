@@ -1,5 +1,9 @@
 import { describe, expect, test } from "bun:test";
-import { measureTtmSeconds, weekendExcludedSeconds } from "../src/measures.ts";
+import {
+  measureTtfrSeconds,
+  measureTtmSeconds,
+  weekendExcludedSeconds,
+} from "../src/measures.ts";
 
 describe("measureTtmSeconds", () => {
   test("null mergedAt → null; unparseable → null; weekday diff exact", () => {
@@ -17,6 +21,24 @@ describe("measureTtmSeconds", () => {
   test("credits a weekend-spanning PR only with working time", () => {
     // ready Friday 16:00 → merged Monday 10:00 → Fri 8h + Mon 10h = 18h.
     expect(measureTtmSeconds("2026-01-09T16:00:00Z", "2026-01-12T10:00:00Z")).toBe(18 * 3600);
+  });
+});
+
+describe("measureTtfrSeconds", () => {
+  test("null firstReviewAt → null; unparseable → null; weekday diff exact", () => {
+    expect(measureTtfrSeconds("2026-03-02T00:00:00Z", null)).toBeNull();
+    expect(measureTtfrSeconds("nope", "2026-03-02T00:00:00Z")).toBeNull();
+    // 2026-03-02 is a Monday, so the 30s falls entirely on a weekday.
+    expect(measureTtfrSeconds("2026-03-02T00:00:00Z", "2026-03-02T00:00:30Z")).toBe(30);
+  });
+
+  test("credits a weekend-spanning wait only with working time", () => {
+    // ready Friday 16:00 → first review Monday 10:00 → Fri 8h + Mon 10h = 18h.
+    expect(measureTtfrSeconds("2026-01-09T16:00:00Z", "2026-01-12T10:00:00Z")).toBe(18 * 3600);
+  });
+
+  test("a review before the ready point (inverted interval) → 0", () => {
+    expect(measureTtfrSeconds("2026-03-03T00:00:00Z", "2026-03-02T00:00:00Z")).toBe(0);
   });
 });
 

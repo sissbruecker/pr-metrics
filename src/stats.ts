@@ -6,16 +6,17 @@
  * a SQLite primitive, and the category rules live in app code, so the
  * aggregation cannot be pushed into SQL.)
  *
- * Time-to-merge is computed HERE, in memory, from each row's stored
- * `ready_for_review_at` + `merged_at` (via `measureTtmSeconds` from `src/measures.ts`)
- * rather than read from a precomputed column. The DB stores only the raw inputs,
- * so changing the TTM definition (or adding a new derived metric) takes effect on
- * the next read with no database recompute or re-sync.
+ * Each metric is computed HERE, in memory, from a row's stored timestamps (via
+ * the `measure*` functions in `src/measures.ts`) rather than read from a
+ * precomputed column: time-to-merge from `ready_for_review_at` + `merged_at`,
+ * time-to-first-review from `ready_for_review_at` + `first_review_at`. The DB
+ * stores only the raw inputs, so changing a metric's definition (or adding a new
+ * one) takes effect on the next read with no database recompute or re-sync.
  *
  * The flow is:
  *   1. Compute the trailing-12-month window start from `now`.
  *   2. Run ONE parameterized query for the rows merged within that window.
- *   3. Derive each row's TTM, then bucket by month (`YYYY-MM`), computing a
+ *   3. Derive each row's metrics, then bucket by month (`YYYY-MM`), computing a
  *      shared `count` plus per-metric median / mean per month over the rows
  *      whose derived category is currently included (the UI's category filter;
  *      all categories by default).
@@ -25,12 +26,12 @@
  * `computeStats` ties window + fetch + aggregation together for an endpoint.
  *
  * Metric-ready shape: each month carries a shared `count` (the denominator) and
- * one named metric bucket per metric (`timeToMerge` today). Adding a metric
- * later means deriving a second per-row value, accumulating it, and emitting one
- * more named bucket next to `timeToMerge` — nothing else moves. The outlier cap
- * is applied per metric: it governs only whether a row's value feeds THAT
- * metric's median/mean (and bumps THAT metric's `excludedCount`); the row still
- * counts toward the shared `count`.
+ * one named metric bucket per metric (`timeToMerge` and `timeToFirstReview`
+ * today). Adding a metric later means deriving another per-row value,
+ * accumulating it, and emitting one more named bucket alongside the others —
+ * nothing else moves. The outlier cap is applied per metric: it governs only
+ * whether a row's value feeds THAT metric's median/mean (and bumps THAT metric's
+ * `excludedCount`); the row still counts toward the shared `count`.
  *
  * Design decisions:
  * - Median uses the standard definition: sort the values, take the middle one
@@ -52,9 +53,9 @@
 
 import type { Database } from "bun:sqlite";
 import { categorize, type Category } from "./categorize.ts";
-import { DEFAULT_TTM_THRESHOLD_DAYS } from "./config.ts";
+import { DEFAULT_OUTLIER_THRESHOLD_DAYS } from "./config.ts";
 import { filterRows } from "./filter.ts";
-import { measureTtmSeconds } from "./measures.ts";
+import { measureTtfrSeconds, measureTtmSeconds } from "./measures.ts";
 
 /** Seconds in one day, for converting day-denominated thresholds. */
 export const SECONDS_PER_DAY = 86400;
@@ -69,6 +70,12 @@ export interface StatsRow {
    * (a merged PR always has one in practice), which yields a null TTM.
    */
   ready_for_review_at: string | null;
+  /**
+   * ISO 8601 UTC text of the first review's submission, or null when the PR has
+   * no review. The time-to-first-review is derived in memory from this and
+   * `ready_for_review_at`; null (no review, or no start point) yields a null TTFR.
+   */
+  first_review_at: string | null;
   /** Raw PR title, used to derive the category. */
   title: string;
 }
@@ -99,6 +106,8 @@ export interface MonthStats {
   count: number;
   /** Time-to-merge metric bucket for this month. */
   timeToMerge: MetricBucket;
+  /** Time-to-first-review metric bucket for this month. */
+  timeToFirstReview: MetricBucket;
 }
 
 /** The full aggregated result a JSON endpoint / UI can consume directly. */
@@ -173,9 +182,10 @@ export function windowMonths(now: Date): string[] {
 
 /**
  * Pure aggregation. Buckets `rows` by month (`substr(merged_at, 1, 7)`) and
- * computes a shared `count` plus the per-metric `timeToMerge` bucket per month
- * over the rows whose derived category is included. Always emits all `months` in
- * order (empty → count 0, null median/mean, excludedCount 0).
+ * computes a shared `count` plus the per-metric `timeToMerge` and
+ * `timeToFirstReview` buckets per month over the rows whose derived category is
+ * included. Always emits all `months` in order (empty → count 0, null
+ * median/mean, excludedCount 0).
  *
  * `includedCategories` is the category filter: when provided, a row whose
  * derived category is not in the set is dropped before any other accounting — it
@@ -184,13 +194,14 @@ export function windowMonths(now: Date): string[] {
  * yields all-empty months.
  *
  * Once a row passes the window + category filters it is counted (`count += 1`)
- * unconditionally — outliers stay in the denominator. The TTM is then derived
- * per row (from `ready_for_review_at` + `merged_at`); the cap is applied PER
- * METRIC: a derived TTM above `thresholdSeconds` is dropped from the
- * time-to-merge median/mean and tallied in `timeToMerge.excludedCount`, but the
- * row still counts. A null TTM has nothing to exceed the threshold (never an
- * outlier) and simply doesn't feed median/mean. `thresholdSeconds` defaults to
- * `Infinity` (no filtering).
+ * unconditionally — outliers stay in the denominator. Each metric is then
+ * derived per row (TTM from `ready_for_review_at` + `merged_at`, TTFR from
+ * `ready_for_review_at` + `first_review_at`); the cap is applied PER METRIC: a
+ * derived value above `thresholdSeconds` is dropped from THAT metric's
+ * median/mean and tallied in THAT metric's `excludedCount`, but the row still
+ * counts. A null measure has nothing to exceed the threshold (never an outlier)
+ * and simply doesn't feed median/mean. `thresholdSeconds` defaults to `Infinity`
+ * (no filtering).
  *
  * Rows whose month falls outside `months` are ignored (defensive — the query
  * already filters by the window start).
@@ -205,12 +216,14 @@ export function aggregate(
 } {
   const monthSet = new Set(months);
 
-  // Per-month accumulators: the shared count, the in-cap TTM values feeding
-  // median/mean, and the per-metric outlier tally.
+  // Per-month accumulators: the shared count, plus the in-cap values feeding
+  // each metric's median/mean and that metric's per-month outlier tally.
   interface Acc {
     count: number;
     ttms: number[];
     ttmExcluded: number;
+    ttfrs: number[];
+    ttfrExcluded: number;
   }
   const accByMonth = new Map<string, Acc>();
 
@@ -225,29 +238,39 @@ export function aggregate(
 
     let acc = accByMonth.get(month);
     if (!acc) {
-      acc = { count: 0, ttms: [], ttmExcluded: 0 };
+      acc = { count: 0, ttms: [], ttmExcluded: 0, ttfrs: [], ttfrExcluded: 0 };
       accByMonth.set(month, acc);
     }
 
     // A surviving row always counts (outliers stay in the denominator). The cap
-    // only governs whether its value feeds the metric below.
+    // only governs whether its value feeds a metric below.
     acc.count += 1;
 
-    // Derive the TTM in memory from the stored start point + merge time. Null
-    // when there is no usable start point (defensive — merged PRs always have
-    // one in practice).
+    // Derive each metric in memory from the stored timestamps. Both share the
+    // `ready_for_review_at` start point; a null start point (defensive — merged
+    // PRs always have one in practice) yields a null measure for both.
     const ttmSeconds =
       row.ready_for_review_at === null
         ? null
         : measureTtmSeconds(row.ready_for_review_at, row.merged_at);
+    const ttfrSeconds =
+      row.ready_for_review_at === null
+        ? null
+        : measureTtfrSeconds(row.ready_for_review_at, row.first_review_at);
 
-    // Per-metric filtering: a too-large TTM is excluded from this metric's
-    // median/mean (and tallied), but the row already counted above. A null TTM
-    // has nothing to compare and is never an outlier; it just doesn't feed.
+    // Per-metric filtering: a too-large value is excluded from THAT metric's
+    // median/mean (and tallied), but the row already counted above. A null
+    // measure has nothing to compare and is never an outlier; it just doesn't
+    // feed. The same `thresholdSeconds` cap governs every metric.
     if (ttmSeconds !== null && ttmSeconds > thresholdSeconds) {
       acc.ttmExcluded += 1;
     } else if (ttmSeconds !== null) {
       acc.ttms.push(ttmSeconds);
+    }
+    if (ttfrSeconds !== null && ttfrSeconds > thresholdSeconds) {
+      acc.ttfrExcluded += 1;
+    } else if (ttfrSeconds !== null) {
+      acc.ttfrs.push(ttfrSeconds);
     }
   }
 
@@ -258,6 +281,7 @@ export function aggregate(
         month,
         count: 0,
         timeToMerge: { median: null, mean: null, excludedCount: 0 },
+        timeToFirstReview: { median: null, mean: null, excludedCount: 0 },
       };
     }
     return {
@@ -267,6 +291,11 @@ export function aggregate(
         median: median(acc.ttms),
         mean: mean(acc.ttms),
         excludedCount: acc.ttmExcluded,
+      },
+      timeToFirstReview: {
+        median: median(acc.ttfrs),
+        mean: mean(acc.ttfrs),
+        excludedCount: acc.ttfrExcluded,
       },
     };
   });
@@ -284,7 +313,7 @@ export function fetchStatsRows(
   windowStart: string,
 ): StatsRow[] {
   const stmt = db.query<StatsRow, [number, string]>(
-    `SELECT merged_at, ready_for_review_at, title
+    `SELECT merged_at, ready_for_review_at, first_review_at, title
        FROM pull_requests
       WHERE repo_id = ?
         AND merged_at >= ?
@@ -306,7 +335,7 @@ export function computeStats(
   db: Database,
   repoId: number,
   now: Date = new Date(),
-  thresholdSeconds: number = DEFAULT_TTM_THRESHOLD_DAYS * SECONDS_PER_DAY,
+  thresholdSeconds: number = DEFAULT_OUTLIER_THRESHOLD_DAYS * SECONDS_PER_DAY,
   includedCategories?: Set<Category>,
 ): StatsResult {
   const windowStart = computeWindowStart(now);

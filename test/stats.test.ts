@@ -48,6 +48,34 @@ function readyBefore(mergedISO: string, weekdaySeconds: number): string {
   return new Date(cursor).toISOString();
 }
 
+/**
+ * Forward counterpart of `readyBefore`: return a `first_review_at` ISO timestamp
+ * such that the weekend-excluded TTFR from `readyISO` to it is exactly
+ * `weekdaySeconds`. Walks forward from the ready instant, counting only weekday
+ * time and skipping whole weekend days.
+ */
+function reviewAfter(readyISO: string, weekdaySeconds: number): string {
+  let remainingMs = weekdaySeconds * 1000;
+  let cursor = Date.parse(readyISO);
+  while (remainingMs > 0) {
+    const dayStart = Math.floor(cursor / MS_DAY) * MS_DAY;
+    const nextDay = dayStart + MS_DAY;
+    if (isWeekendMs(dayStart)) {
+      cursor = nextDay; // weekend day contributes no weekday time
+      continue;
+    }
+    const available = nextDay - cursor;
+    if (remainingMs <= available) {
+      cursor += remainingMs;
+      remainingMs = 0;
+    } else {
+      remainingMs -= available;
+      cursor = nextDay;
+    }
+  }
+  return new Date(cursor).toISOString();
+}
+
 describe("median", () => {
   test("odd-length → middle value", () => {
     expect(median([3, 1, 2])).toBe(2);
@@ -94,19 +122,27 @@ describe("readyBefore (test helper) round-trips through measureTtmSeconds", () =
 describe("aggregate", () => {
   const months = ["2026-05", "2026-06"];
 
-  /** Build a StatsRow, deriving `ready_for_review_at` from a target TTM. */
+  /**
+   * Build a StatsRow, deriving `ready_for_review_at` from a target TTM and, when
+   * `ttfr` is given, `first_review_at` from that ready point. `ttfr` defaults to
+   * null (no review).
+   */
   function row(
     over: {
       merged_at?: string;
       ttm?: number | null;
+      ttfr?: number | null;
       title?: string;
     } = {},
   ): StatsRow {
     const merged_at = over.merged_at ?? "2026-06-15T00:00:00Z";
     const ttm = over.ttm === undefined ? 100 : over.ttm;
+    const ready = ttm === null ? null : readyBefore(merged_at, ttm);
+    const ttfr = over.ttfr === undefined ? null : over.ttfr;
     return {
       merged_at,
-      ready_for_review_at: ttm === null ? null : readyBefore(merged_at, ttm),
+      ready_for_review_at: ready,
+      first_review_at: ttfr === null || ready === null ? null : reviewAfter(ready, ttfr),
       title: over.title ?? "fix: a bug",
     };
   }
@@ -221,6 +257,54 @@ describe("aggregate", () => {
     expect(june.timeToMerge.median).toBeNull(); // null didn't feed; outlier was capped
     expect(june.timeToMerge.mean).toBeNull();
   });
+
+  test("emits a timeToFirstReview bucket over the reviewed rows", () => {
+    const rows: StatsRow[] = [
+      row({ merged_at: "2026-06-01T00:00:00Z", ttm: 100, ttfr: 10, title: "fix: a" }),
+      row({ merged_at: "2026-06-02T00:00:00Z", ttm: 100, ttfr: 30, title: "fix: b" }),
+      row({ merged_at: "2026-06-03T00:00:00Z", ttm: 100, ttfr: 50, title: "feat: c" }),
+    ];
+    const { monthly } = aggregate(rows, months);
+    const june = monthly.find((m) => m.month === "2026-06")!;
+    // TTFR values 10, 30, 50 → median 30, mean 30.
+    expect(june.count).toBe(3);
+    expect(june.timeToFirstReview.median).toBe(30);
+    expect(june.timeToFirstReview.mean).toBe(30);
+    expect(june.timeToFirstReview.excludedCount).toBe(0);
+  });
+
+  test("the shared cap drops outliers from BOTH metrics independently", () => {
+    const rows: StatsRow[] = [
+      // In cap for both.
+      row({ ttm: 10, ttfr: 10, title: "fix: a" }),
+      // TTM over the cap, TTFR within: excluded from TTM only.
+      row({ ttm: 1000, ttfr: 20, title: "fix: b" }),
+      // TTM within, TTFR over the cap: excluded from TTFR only.
+      row({ ttm: 30, ttfr: 1000, title: "fix: c" }),
+    ];
+    const { monthly } = aggregate(rows, months, 100);
+    const june = monthly.find((m) => m.month === "2026-06")!;
+    expect(june.count).toBe(3); // every row counts
+    // TTM: 10 and 30 feed (1000 excluded) → median 20.
+    expect(june.timeToMerge.median).toBe(20);
+    expect(june.timeToMerge.excludedCount).toBe(1);
+    // TTFR: 10 and 20 feed (1000 excluded) → median 15.
+    expect(june.timeToFirstReview.median).toBe(15);
+    expect(june.timeToFirstReview.excludedCount).toBe(1);
+  });
+
+  test("a row with no first review counts but does not feed TTFR", () => {
+    const rows: StatsRow[] = [
+      row({ merged_at: "2026-06-01T00:00:00Z", ttm: 100, ttfr: null, title: "fix: a" }),
+      row({ merged_at: "2026-06-02T00:00:00Z", ttm: 100, ttfr: 40, title: "fix: b" }),
+    ];
+    const { monthly } = aggregate(rows, months);
+    const june = monthly.find((m) => m.month === "2026-06")!;
+    expect(june.count).toBe(2); // both count
+    expect(june.timeToFirstReview.median).toBe(40); // only the reviewed row feeds
+    expect(june.timeToFirstReview.mean).toBe(40);
+    expect(june.timeToFirstReview.excludedCount).toBe(0); // null is never an outlier
+  });
 });
 
 describe("fetchStatsRows + computeStats (in-memory DB)", () => {
@@ -234,7 +318,10 @@ describe("fetchStatsRows + computeStats (in-memory DB)", () => {
     return r!.id;
   }
 
-  /** Insert a PR, deriving `ready_for_review_at` from a target TTM. */
+  /**
+   * Insert a PR, deriving `ready_for_review_at` from a target TTM and, when
+   * `ttfr` is given, `first_review_at` from that ready point.
+   */
   function insertPr(
     db: ReturnType<typeof openDb>,
     number: number,
@@ -242,14 +329,16 @@ describe("fetchStatsRows + computeStats (in-memory DB)", () => {
     merged_at: string,
     ttm: number | null,
     title: string,
+    ttfr: number | null = null,
   ): void {
     const ready = ttm === null ? null : readyBefore(merged_at, ttm);
+    const firstReview = ttfr === null || ready === null ? null : reviewAfter(ready, ttfr);
     db.query(
       `INSERT INTO pull_requests
         (repo_id, number, title, url, created_at, merged_at, updated_at,
-         ready_for_review_at, synced_at)
-       VALUES (?, ?, ?, 'u', '2026-01-01T00:00:00Z', ?, '2026-01-01T00:00:00Z', ?, '2026-01-01T00:00:00Z')`,
-    ).run(repoId, number, title, merged_at, ready);
+         ready_for_review_at, first_review_at, synced_at)
+       VALUES (?, ?, ?, 'u', '2026-01-01T00:00:00Z', ?, '2026-01-01T00:00:00Z', ?, ?, '2026-01-01T00:00:00Z')`,
+    ).run(repoId, number, title, merged_at, ready, firstReview);
   }
 
   test("fetchStatsRows filters by repo and windowStart", () => {
@@ -305,6 +394,21 @@ describe("fetchStatsRows + computeStats (in-memory DB)", () => {
     expect(june.count).toBe(2); // outlier still counted in the denominator
     expect(june.timeToMerge.excludedCount).toBe(1);
     expect(june.timeToMerge.median).toBe(3600); // over the single in-cap row
+    db.close();
+  });
+
+  test("computeStats derives timeToFirstReview from the stored first_review_at", () => {
+    const db = openDb(":memory:");
+    const repoId = seedRepo(db);
+    insertPr(db, 1, repoId, "2026-06-10T00:00:00Z", 200, "feat: a", 100);
+    insertPr(db, 2, repoId, "2026-06-12T00:00:00Z", 400, "feat: b", 300);
+    insertPr(db, 3, repoId, "2026-06-14T00:00:00Z", 600, "feat: c", null); // no review
+    const result = computeStats(db, repoId, new Date("2026-06-26T00:00:00Z"));
+    const june = result.monthly.find((m) => m.month === "2026-06")!;
+    expect(june.count).toBe(3); // all three counted
+    // Only the two reviewed PRs feed TTFR: median(100, 300) = 200.
+    expect(june.timeToFirstReview.median).toBe(200);
+    expect(june.timeToFirstReview.excludedCount).toBe(0);
     db.close();
   });
 

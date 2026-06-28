@@ -12,7 +12,7 @@
  *     the user include/exclude whole categories from the metric. Since the
  *     median cannot be recombined from per-category medians, toggling a checkbox
  *     re-fetches with the selected categories so the server recomputes — the same
- *     way changing the repo or the TTM threshold re-fetches.
+ *     way changing the repo or the outlier threshold re-fetches.
  *
  * Chart handling: a single Chart.js instance is created once and then mutated
  * (data + options replaced, `chart.update()`) on every render, rather than
@@ -42,9 +42,10 @@ let currentStats = null;
 /** The single Chart.js instance, created lazily. */
 let chart = null;
 /**
- * Last valid TTM threshold (in days) the UI sent to the server. Initialized to
- * the input's default and updated as the user edits the input; used both for
- * the outlier footnote and to revert when the input holds an invalid value.
+ * Last valid outlier threshold (in days) the UI sent to the server. The cap is
+ * shared by every metric. Initialized to the input's default and updated as the
+ * user edits the input; used both for the outlier footnote and to revert when
+ * the input holds an invalid value.
  */
 let lastThresholdDays = 7;
 
@@ -55,7 +56,7 @@ const els = {
   repoSelect: document.getElementById("repo-select"),
   categoryFilterControl: document.getElementById("category-filter-control"),
   categoryFilter: document.getElementById("category-filter"),
-  ttmThreshold: document.getElementById("ttm-threshold"),
+  outlierThreshold: document.getElementById("outlier-threshold"),
   emptyMessage: document.getElementById("empty-message"),
   report: document.getElementById("report"),
   canvas: document.getElementById("chart"),
@@ -286,14 +287,14 @@ function render() {
 // ---- Data fetching ----------------------------------------------------------
 
 /**
- * Read the TTM threshold input as a positive integer number of days. Invalid or
- * out-of-range input reverts to the last valid value (and the input is reset to
- * match), so a fetch is never made with a bad threshold.
+ * Read the outlier threshold input as a positive integer number of days. Invalid
+ * or out-of-range input reverts to the last valid value (and the input is reset
+ * to match), so a fetch is never made with a bad threshold.
  */
 function currentThresholdDays() {
-  const days = Number(els.ttmThreshold.value);
+  const days = Number(els.outlierThreshold.value);
   if (!Number.isInteger(days) || days < 1) {
-    els.ttmThreshold.value = String(lastThresholdDays);
+    els.outlierThreshold.value = String(lastThresholdDays);
     return lastThresholdDays;
   }
   lastThresholdDays = days;
@@ -328,7 +329,7 @@ function buildCategoryFilter(categories) {
 async function loadStats(repoId, days, categories) {
   let url = `/api/stats?repo=${encodeURIComponent(repoId)}`;
   if (days !== undefined) {
-    url += `&ttmDays=${encodeURIComponent(days)}`;
+    url += `&thresholdDays=${encodeURIComponent(days)}`;
   }
   if (categories !== undefined) {
     url += `&categories=${encodeURIComponent([...categories].join(","))}`;
@@ -379,7 +380,7 @@ async function init() {
     loadStats(els.repoSelect.value, currentThresholdDays(), selectedCategories ?? undefined);
   });
 
-  els.ttmThreshold.addEventListener("change", () => {
+  els.outlierThreshold.addEventListener("change", () => {
     loadStats(els.repoSelect.value, currentThresholdDays(), selectedCategories ?? undefined);
   });
 
