@@ -1,13 +1,20 @@
 /**
- * Client-side, query-only UI for PR time-to-merge stats.
+ * Client-side, query-only UI for PR stats.
  *
- * Read-only: the only network calls are GETs to `/api/repos` and
- * `/api/stats?repo=<id>`. Nothing is ever written back.
+ * Read-only: the only network calls are GETs to `/api/repos`, `/api/categories`,
+ * and `/api/stats?repo=<id>`. Nothing is ever written back.
+ *
+ * The page shows ONE metric at a time, chosen via the topbar switcher (see
+ * `METRICS`). A stats response carries every metric's per-month bucket, so
+ * switching metrics is a pure client-side re-render of the already-loaded data —
+ * only repo / category / threshold changes re-fetch.
  *
  * Flow:
- *   - On load, fetch the tracked repos and populate the selector (auto-selecting
- *     the first). If there are none, show a friendly message.
+ *   - On load, build the metric switcher, then fetch the tracked repos and
+ *     populate the selector (auto-selecting the first). If there are none, show a
+ *     friendly message.
  *   - On repo change, fetch that repo's trailing-12-month stats and render.
+ *   - On metric change, re-render the loaded stats against the new bucket.
  *   - A category filter (one checkbox per category, all enabled by default) lets
  *     the user include/exclude whole categories from the metric. Since the
  *     median cannot be recombined from per-category medians, toggling a checkbox
@@ -28,7 +35,50 @@ import { formatDuration, BLANK } from "/format.js";
 
 const SECONDS_PER_HOUR = 3600;
 
+// ---- Metrics ----------------------------------------------------------------
+
+/**
+ * The metrics the UI can display, in switcher order. Each entry is the page
+ * chrome for one metric plus `key`, the name of its bucket in every month of a
+ * stats response ({median, mean, excludedCount}). The whole page renders ONE
+ * selected metric at a time; switching only swaps which bucket is read, so it is
+ * a pure client-side re-render — the stats response already carries every
+ * metric's bucket, and no refetch is needed.
+ *
+ * Adding a metric is a one-entry edit here (plus the matching server-side
+ * bucket): the topbar switcher, title, subtitle, chart caption, and outlier
+ * footnote all derive from this list.
+ */
+const METRICS = [
+  {
+    key: "timeToMerge",
+    slug: "time-to-merge",
+    title: "Time-to-Merge",
+    caption: "Time to merge · hours",
+    subtitle:
+      "Time to merge is measured from when a PR is ready for review to when it merges, <strong>excluding weekends</strong> (Saturdays and Sundays, UTC).",
+    outlierNoun: "time-to-merge",
+  },
+  {
+    key: "timeToFirstReview",
+    slug: "time-to-first-review",
+    title: "Time-to-First-Review",
+    caption: "Time to first review · hours",
+    subtitle:
+      "Time to first review is measured from when a PR is ready for review to its first review, <strong>excluding weekends</strong> (Saturdays and Sundays, UTC).",
+    outlierNoun: "time-to-first-review",
+  },
+];
+
+/** Look up a metric descriptor by its bucket key. */
+function metricByKey(key) {
+  return METRICS.find((m) => m.key === key) ?? METRICS[0];
+}
+
 // ---- Module state -----------------------------------------------------------
+
+/** The currently selected metric's bucket key (defaults to the first metric). */
+let selectedMetric = METRICS[0].key;
 
 /**
  * Currently included categories as a Set of category names. null until the
@@ -52,6 +102,10 @@ let lastThresholdDays = 7;
 // ---- DOM refs ---------------------------------------------------------------
 
 const els = {
+  metricTabs: document.getElementById("metric-tabs"),
+  pageTitle: document.getElementById("page-title"),
+  subtitle: document.getElementById("subtitle"),
+  chartCaption: document.getElementById("chart-caption"),
   controls: document.getElementById("controls"),
   repoSelect: document.getElementById("repo-select"),
   categoryFilterControl: document.getElementById("category-filter-control"),
@@ -121,12 +175,13 @@ function renderTable(stats) {
   }
 
   for (const m of stats.monthly) {
+    const bucket = m[selectedMetric];
     const row = tbody.insertRow();
     const cells = [
       m.month,
-      String(m.count - m.timeToMerge.excludedCount),
-      formatCell("median", m.timeToMerge.median),
-      formatCell("mean", m.timeToMerge.mean),
+      String(m.count - bucket.excludedCount),
+      formatCell("median", bucket.median),
+      formatCell("mean", bucket.mean),
     ];
     cells.forEach((text, i) => {
       const cell = i === 0 ? document.createElement("th") : row.insertCell();
@@ -201,8 +256,8 @@ function renderChart(stats) {
   const c = ensureChart();
   const labels = stats.months;
 
-  const medianRaw = stats.monthly.map((m) => m.timeToMerge.median);
-  const meanRaw = stats.monthly.map((m) => m.timeToMerge.mean);
+  const medianRaw = stats.monthly.map((m) => m[selectedMetric].median);
+  const meanRaw = stats.monthly.map((m) => m[selectedMetric].mean);
 
   // Shared marker styling: a white dot with a colored ring, per the design.
   const point = {
@@ -259,9 +314,63 @@ function renderChart(stats) {
     const i = items[0]?.dataIndex;
     if (i === undefined) return "";
     const m = stats.monthly[i];
-    return `${m.count - m.timeToMerge.excludedCount} PRs`;
+    return `${m.count - m[selectedMetric].excludedCount} PRs`;
   };
   c.update();
+}
+
+// ---- Metric chrome ----------------------------------------------------------
+
+/**
+ * Build the topbar metric switcher once, one button per metric. Clicking a
+ * button selects that metric and re-renders from the already-loaded stats (no
+ * refetch — every metric's bucket is already present). Segments are separated by
+ * a muted dot to read as a path inside the terminal topbar.
+ */
+function buildMetricTabs() {
+  els.metricTabs.innerHTML = "";
+  METRICS.forEach((metric, i) => {
+    if (i > 0) {
+      const sep = document.createElement("span");
+      sep.className = "metric-tab-sep";
+      sep.textContent = "·";
+      sep.setAttribute("aria-hidden", "true");
+      els.metricTabs.appendChild(sep);
+    }
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "metric-tab";
+    btn.dataset.metric = metric.key;
+    btn.textContent = metric.slug;
+    btn.addEventListener("click", () => selectMetric(metric.key));
+    els.metricTabs.appendChild(btn);
+  });
+}
+
+/** Switch the displayed metric and re-render. Ignores a no-op reselect. */
+function selectMetric(key) {
+  if (key === selectedMetric) return;
+  selectedMetric = key;
+  applyMetricChrome();
+  render();
+}
+
+/**
+ * Update the page chrome that depends on the selected metric: the active topbar
+ * tab, the title, the subtitle, and the chart caption. Independent of any data,
+ * so it is safe to call before the first stats load.
+ */
+function applyMetricChrome() {
+  const metric = metricByKey(selectedMetric);
+  for (const btn of els.metricTabs.querySelectorAll(".metric-tab")) {
+    btn.setAttribute(
+      "aria-pressed",
+      btn.dataset.metric === selectedMetric ? "true" : "false",
+    );
+  }
+  els.pageTitle.textContent = metric.title;
+  els.subtitle.innerHTML = metric.subtitle;
+  els.chartCaption.textContent = metric.caption;
 }
 
 // ---- Top-level render -------------------------------------------------------
@@ -273,15 +382,16 @@ function render() {
   renderTable(currentStats);
   renderChart(currentStats);
 
+  const metric = metricByKey(selectedMetric);
   const ex = currentStats.monthly.reduce(
-    (s, m) => s + m.timeToMerge.excludedCount,
+    (s, m) => s + m[selectedMetric].excludedCount,
     0,
   );
   const days = lastThresholdDays;
   const exPr = ex === 1 ? "PR was" : "PRs were";
   const dayLabel = days === 1 ? "day" : "days";
   els.footnote.textContent =
-    `${ex} ${exPr} excluded as outliers (time-to-merge over ${days} ${dayLabel}).`;
+    `${ex} ${exPr} excluded as outliers (${metric.outlierNoun} over ${days} ${dayLabel}).`;
 }
 
 // ---- Data fetching ----------------------------------------------------------
@@ -344,6 +454,12 @@ async function loadStats(repoId, days, categories) {
 }
 
 async function init() {
+  // Build the metric switcher and apply the default metric's chrome up front, so
+  // the topbar, title, and subtitle are populated even on the empty / error
+  // states (the switcher itself depends only on the static METRICS list).
+  buildMetricTabs();
+  applyMetricChrome();
+
   // Repos and the category list are independent resources; fetch them together.
   let repos, categories;
   try {

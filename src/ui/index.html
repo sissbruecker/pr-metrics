@@ -12,18 +12,14 @@
       <div class="topbar-brand">
         <span class="topbar-dot"></span>
         <span class="topbar-name">pr-stats</span>
-        <span class="topbar-path">/ time-to-merge</span>
+        <span class="topbar-sep">/</span>
+        <nav class="metric-tabs" id="metric-tabs" aria-label="Metric"></nav>
       </div>
-      <span class="topbar-meta">Trailing 12 months · UTC</span>
     </header>
 
     <div class="card-body">
-      <h1>PR Time-to-Merge Stats</h1>
-      <p class="subtitle">
-        Time to merge is measured from when a PR is ready for review to when it
-        merges, <strong>excluding weekends</strong> (Saturdays and Sundays,
-        UTC).
-      </p>
+      <h1 id="page-title"></h1>
+      <p class="subtitle" id="subtitle"></p>
 
       <div id="controls" class="controls hidden">
         <div class="control">
@@ -69,7 +65,7 @@
 
       <div id="report" class="hidden">
         <div class="chart-header">
-          <span class="chart-caption">Time to merge · hours</span>
+          <span class="chart-caption" id="chart-caption"></span>
           <div class="legend">
             <span class="legend-item">
               <span class="legend-swatch legend-swatch--median"></span>Median
