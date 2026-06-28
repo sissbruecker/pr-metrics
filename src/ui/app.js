@@ -75,6 +75,37 @@ function metricByKey(key) {
   return METRICS.find((m) => m.key === key) ?? METRICS[0];
 }
 
+// ---- Settings persistence ---------------------------------------------------
+
+/**
+ * The control selections (metric, repo, threshold, and the set of unchecked
+ * categories) are mirrored to localStorage under one key so they survive a page
+ * reload. Reads/writes are wrapped in try/catch: a disabled or corrupt store
+ * degrades silently to defaults rather than throwing.
+ */
+const STORAGE_KEY = "pr-stats:ui";
+
+/** Read the saved settings object, or {} if missing/unavailable/corrupt. */
+function loadSettings() {
+  try {
+    return JSON.parse(localStorage.getItem(STORAGE_KEY)) || {};
+  } catch {
+    return {};
+  }
+}
+
+/** Merge a partial settings patch into the stored object. */
+function saveSettings(patch) {
+  try {
+    localStorage.setItem(
+      STORAGE_KEY,
+      JSON.stringify({ ...loadSettings(), ...patch }),
+    );
+  } catch {
+    // Ignore: persistence is best-effort.
+  }
+}
+
 // ---- Module state -----------------------------------------------------------
 
 /** The currently selected metric's bucket key (defaults to the first metric). */
@@ -351,6 +382,7 @@ function buildMetricTabs() {
 function selectMetric(key) {
   if (key === selectedMetric) return;
   selectedMetric = key;
+  saveSettings({ metric: key });
   applyMetricChrome();
   render();
 }
@@ -412,18 +444,21 @@ function currentThresholdDays() {
 }
 
 /**
- * Build the category filter checkboxes from the canonical category list, all
- * checked, and reveal the control. Seeds `selectedCategories` to the full set.
+ * Build the category filter checkboxes from the canonical category list and
+ * reveal the control. A category is checked unless it appears in `deselected`
+ * (the persisted set of unchecked names), so categories added since the last
+ * visit default to checked. Seeds `selectedCategories` from the checked boxes.
  */
-function buildCategoryFilter(categories) {
-  selectedCategories = new Set(categories);
+function buildCategoryFilter(categories, deselected = new Set()) {
+  selectedCategories = new Set();
   els.categoryFilter.innerHTML = "";
   for (const cat of categories) {
     const label = document.createElement("label");
     const input = document.createElement("input");
     input.type = "checkbox";
     input.value = cat;
-    input.checked = true;
+    input.checked = !deselected.has(cat);
+    if (input.checked) selectedCategories.add(cat);
     label.appendChild(input);
     label.appendChild(document.createTextNode(cat));
     els.categoryFilter.appendChild(label);
@@ -454,9 +489,19 @@ async function loadStats(repoId, days, categories) {
 }
 
 async function init() {
-  // Build the metric switcher and apply the default metric's chrome up front, so
-  // the topbar, title, and subtitle are populated even on the empty / error
-  // states (the switcher itself depends only on the static METRICS list).
+  // Restore persisted selections (defaults to {} if nothing/invalid is stored).
+  const saved = loadSettings();
+
+  // Restore the metric before applying chrome, guarding against a stale key
+  // from a since-removed metric.
+  if (saved.metric && METRICS.some((m) => m.key === saved.metric)) {
+    selectedMetric = saved.metric;
+  }
+
+  // Build the metric switcher and apply the (possibly restored) metric's chrome
+  // up front, so the topbar, title, and subtitle are populated even on the
+  // empty / error states (the switcher itself depends only on the static
+  // METRICS list).
   buildMetricTabs();
   applyMetricChrome();
 
@@ -480,24 +525,41 @@ async function init() {
     return;
   }
 
-  // Populate the selector and auto-select the first repo.
+  // Populate the selector, restoring the saved repo if it still exists and
+  // otherwise auto-selecting the first.
   for (const r of repos) {
     const opt = document.createElement("option");
     opt.value = String(r.id);
     opt.textContent = `${r.owner}/${r.repo} (${r.pr_count})`;
     els.repoSelect.appendChild(opt);
   }
-  buildCategoryFilter(categories);
+  let initialRepo = String(repos[0].id);
+  if (saved.repo != null && repos.some((r) => String(r.id) === String(saved.repo))) {
+    initialRepo = String(saved.repo);
+  }
+  els.repoSelect.value = initialRepo;
+
+  buildCategoryFilter(categories, new Set(saved.deselectedCategories ?? []));
+
+  // Seed the threshold input from a valid saved value before the first fetch,
+  // using the same positive-integer guard as currentThresholdDays.
+  if (Number.isInteger(saved.thresholdDays) && saved.thresholdDays >= 1) {
+    els.outlierThreshold.value = String(saved.thresholdDays);
+  }
+
   els.controls.classList.remove("hidden");
 
   // Wire up controls. Repo and threshold changes re-fetch while preserving the
   // current category selection.
   els.repoSelect.addEventListener("change", () => {
+    saveSettings({ repo: els.repoSelect.value });
     loadStats(els.repoSelect.value, currentThresholdDays(), selectedCategories ?? undefined);
   });
 
   els.outlierThreshold.addEventListener("change", () => {
-    loadStats(els.repoSelect.value, currentThresholdDays(), selectedCategories ?? undefined);
+    const days = currentThresholdDays();
+    saveSettings({ thresholdDays: days });
+    loadStats(els.repoSelect.value, days, selectedCategories ?? undefined);
   });
 
   // Toggling a category checkbox re-fetches: median can't be recombined from
@@ -505,12 +567,15 @@ async function init() {
   els.categoryFilter.addEventListener("change", () => {
     const boxes = els.categoryFilter.querySelectorAll('input[type="checkbox"]');
     selectedCategories = new Set([...boxes].filter((b) => b.checked).map((b) => b.value));
+    saveSettings({
+      deselectedCategories: [...boxes].filter((b) => !b.checked).map((b) => b.value),
+    });
     loadStats(els.repoSelect.value, currentThresholdDays(), selectedCategories);
   });
 
-  // Initial load for the auto-selected first repo, using the default threshold
+  // Initial load for the selected repo (restored or first), using the threshold
   // shown in the input.
-  await loadStats(repos[0].id, currentThresholdDays(), selectedCategories ?? undefined);
+  await loadStats(initialRepo, currentThresholdDays(), selectedCategories ?? undefined);
 }
 
 init();
