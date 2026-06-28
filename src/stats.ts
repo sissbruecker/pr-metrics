@@ -7,7 +7,7 @@
  * aggregation cannot be pushed into SQL.)
  *
  * Time-to-merge is computed HERE, in memory, from each row's stored
- * `ready_for_review_at` + `merged_at` (via `computeTtmSeconds` from `src/ttm.ts`)
+ * `ready_for_review_at` + `merged_at` (via `measureTtmSeconds` from `src/measures.ts`)
  * rather than read from a precomputed column. The DB stores only the raw inputs,
  * so changing the TTM definition (or adding a new derived metric) takes effect on
  * the next read with no database recompute or re-sync.
@@ -46,7 +46,7 @@ import type { Database } from "bun:sqlite";
 import { categorize, type Category } from "./categorize.ts";
 import { DEFAULT_TTM_THRESHOLD_DAYS } from "./config.ts";
 import { filterRows } from "./filter.ts";
-import { computeTtmSeconds } from "./ttm.ts";
+import { measureTtmSeconds } from "./measures.ts";
 
 /** Seconds in one day, for converting day-denominated thresholds. */
 export const SECONDS_PER_DAY = 86400;
@@ -218,7 +218,7 @@ export function aggregate(
     const ttmSeconds =
       row.ready_for_review_at === null
         ? null
-        : computeTtmSeconds(row.ready_for_review_at, row.merged_at);
+        : measureTtmSeconds(row.ready_for_review_at, row.merged_at);
 
     // Drop outliers entirely: a too-large TTM contributes to nothing but the
     // excluded tally. A null TTM has nothing to compare and is never excluded.

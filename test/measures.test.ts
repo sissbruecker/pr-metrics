@@ -1,22 +1,22 @@
 import { describe, expect, test } from "bun:test";
-import { computeTtmSeconds, weekendExcludedSeconds } from "../src/ttm.ts";
+import { measureTtmSeconds, weekendExcludedSeconds } from "../src/measures.ts";
 
-describe("computeTtmSeconds", () => {
+describe("measureTtmSeconds", () => {
   test("null mergedAt → null; unparseable → null; weekday diff exact", () => {
-    expect(computeTtmSeconds("2026-03-02T00:00:00Z", null)).toBeNull();
-    expect(computeTtmSeconds("nope", "2026-03-02T00:00:00Z")).toBeNull();
+    expect(measureTtmSeconds("2026-03-02T00:00:00Z", null)).toBeNull();
+    expect(measureTtmSeconds("nope", "2026-03-02T00:00:00Z")).toBeNull();
     // 2026-03-02 is a Monday, so the 30s falls entirely on a weekday.
-    expect(computeTtmSeconds("2026-03-02T00:00:00Z", "2026-03-02T00:00:30Z")).toBe(30);
+    expect(measureTtmSeconds("2026-03-02T00:00:00Z", "2026-03-02T00:00:30Z")).toBe(30);
   });
 
   test("within-week interval equals the wall-clock difference", () => {
     // Monday → Tuesday: exactly 1 day, no weekend.
-    expect(computeTtmSeconds("2026-03-02T00:00:00Z", "2026-03-03T00:00:00Z")).toBe(86400);
+    expect(measureTtmSeconds("2026-03-02T00:00:00Z", "2026-03-03T00:00:00Z")).toBe(86400);
   });
 
   test("credits a weekend-spanning PR only with working time", () => {
     // ready Friday 16:00 → merged Monday 10:00 → Fri 8h + Mon 10h = 18h.
-    expect(computeTtmSeconds("2026-01-09T16:00:00Z", "2026-01-12T10:00:00Z")).toBe(18 * 3600);
+    expect(measureTtmSeconds("2026-01-09T16:00:00Z", "2026-01-12T10:00:00Z")).toBe(18 * 3600);
   });
 });
 

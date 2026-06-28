@@ -1,8 +1,16 @@
 /**
- * Time-to-merge (TTM) metric.
+ * Per-PR measures: pure derivations of a single scalar from one pull request's
+ * fields.
  *
- * Pure functions — no database access, no network. Given a pull request's
- * `ready_for_review_at` start point and `merged_at`, compute the elapsed
+ * Pure functions — no database access, no network. Each function takes the
+ * fields of a single PR and returns one derived value. This is deliberately
+ * the *per-PR* half of the pipeline: aggregation across many PRs (medians,
+ * means, grouping, thresholds) lives in `src/stats.ts`. New per-PR measures
+ * (e.g. time-to-first-review, review-cycle count, PR size) belong here; anything
+ * that summarizes a population of PRs belongs in `stats.ts`.
+ *
+ * The first measure is time-to-merge (TTM). Given a pull request's
+ * `ready_for_review_at` start point and `merged_at`, it computes the elapsed
  * time-to-merge in whole seconds, EXCLUDING weekends (Saturdays and Sundays,
  * in UTC).
  *
@@ -41,7 +49,7 @@ function isWeekendDay(utcDay: number): boolean {
  * minus any seconds landing on a Saturday or Sunday.
  *
  * Returns 0 for an empty or inverted interval (`end <= start`) and for an
- * unparseable timestamp — `computeTtmSeconds` layers the merged/unmerged and
+ * unparseable timestamp — `measureTtmSeconds` layers the merged/unmerged and
  * NaN→null policy on top.
  *
  * Walks the interval one UTC calendar day at a time; TTM windows are at most
@@ -77,7 +85,7 @@ export function weekendExcludedSeconds(
  * either timestamp is unparseable; otherwise a non-negative integer count of
  * weekday seconds.
  */
-export function computeTtmSeconds(
+export function measureTtmSeconds(
   readyForReviewAt: string,
   mergedAt: string | null,
 ): number | null {

@@ -131,7 +131,7 @@ function isoDate(date: Date): string {
 // stores: the draft-aware `ready_for_review_at` start point, the draft/review
 // flags, the first review timestamp, and the raw draft transitions (persisted
 // verbatim so the TTM definition can change without re-syncing). This is the
-// sync-time counterpart to the read-time TTM metric in `src/ttm.ts`.
+// sync-time counterpart to the read-time TTM measure in `src/measures.ts`.
 //
 // Determining `ready_for_review_at`:
 // - Never a draft (no transition nodes) → `created_at`.

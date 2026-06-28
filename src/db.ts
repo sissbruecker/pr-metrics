@@ -10,7 +10,7 @@
  *   transition history are stored as JSON-text columns on the PR row.
  * - Only raw, sync-time facts are stored. Derived metrics such as time-to-merge
  *   are NOT persisted — they are computed in memory at aggregation time from the
- *   stored timestamps (see {@link computeStats} / `src/ttm.ts`), so the metric
+ *   stored timestamps (see {@link computeStats} / `src/measures.ts`), so the metric
  *   definition can change without re-syncing or recomputing the database.
  * - The `ready_for_review_at` start point IS persisted (the draft-resolution it
  *   depends on uses sync-time state not otherwise stored) — a sync-time fact,

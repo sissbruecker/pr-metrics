@@ -9,7 +9,7 @@ import {
   windowMonths,
   type StatsRow,
 } from "../src/stats.ts";
-import { computeTtmSeconds } from "../src/ttm.ts";
+import { measureTtmSeconds } from "../src/measures.ts";
 import { openDb } from "../src/db.ts";
 
 const MS_DAY = 86_400_000;
@@ -21,7 +21,7 @@ function isWeekendMs(ms: number): boolean {
 }
 
 /**
- * Inverse of `computeTtmSeconds`: return a `ready_for_review_at` ISO timestamp
+ * Inverse of `measureTtmSeconds`: return a `ready_for_review_at` ISO timestamp
  * such that the weekend-excluded TTM from it to `mergedISO` is exactly
  * `weekdaySeconds`. Walks backward from the merge instant, counting only weekday
  * time and skipping whole weekend days — so tests can express a target TTM in
@@ -82,11 +82,11 @@ describe("mean", () => {
   });
 });
 
-describe("readyBefore (test helper) round-trips through computeTtmSeconds", () => {
+describe("readyBefore (test helper) round-trips through measureTtmSeconds", () => {
   test("small within-week, weekend-spanning, and multi-week values", () => {
     const merged = "2026-06-15T00:00:00Z"; // Monday midnight
     for (const ttm of [10, 100, 1000, 3600, 7 * 86400, 30 * 86400]) {
-      expect(computeTtmSeconds(readyBefore(merged, ttm), merged)).toBe(ttm);
+      expect(measureTtmSeconds(readyBefore(merged, ttm), merged)).toBe(ttm);
     }
   });
 });
