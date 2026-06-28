@@ -36,9 +36,9 @@ describe("GET /api/stats categories filter", () => {
       new Request(`http://x/api/stats?repo=${repoId}&categories=Fix`),
     );
     expect(res.status).toBe(200);
-    const body = (await res.json()) as { monthly: { all: { count: number } }[] };
+    const body = (await res.json()) as { monthly: { count: number }[] };
     const total = body.monthly.reduce(
-      (sum, m) => sum + m.all.count,
+      (sum, m) => sum + m.count,
       0,
     );
     expect(total).toBe(1); // only the Fix PR
@@ -60,9 +60,9 @@ describe("GET /api/stats categories filter", () => {
     const handler = createFetchHandler(db);
     const res = await handler(new Request(`http://x/api/stats?repo=${repoId}`));
     expect(res.status).toBe(200);
-    const body = (await res.json()) as { monthly: { all: { count: number } }[] };
+    const body = (await res.json()) as { monthly: { count: number }[] };
     const total = body.monthly.reduce(
-      (sum, m) => sum + m.all.count,
+      (sum, m) => sum + m.count,
       0,
     );
     expect(total).toBe(2); // both PRs
@@ -76,12 +76,53 @@ describe("GET /api/stats categories filter", () => {
       new Request(`http://x/api/stats?repo=${repoId}&categories=`),
     );
     expect(res.status).toBe(200);
-    const body = (await res.json()) as { monthly: { all: { count: number } }[] };
+    const body = (await res.json()) as { monthly: { count: number }[] };
     const total = body.monthly.reduce(
-      (sum, m) => sum + m.all.count,
+      (sum, m) => sum + m.count,
       0,
     );
     expect(total).toBe(0);
+    db.close();
+  });
+});
+
+describe("GET /api/stats count includes outliers", () => {
+  test("an outlier still counts in the month but is tallied as excluded", async () => {
+    const db = openDb(":memory:");
+    const r = db
+      .query<{ id: number }, []>(
+        `INSERT INTO repos (name, owner, repo, url, backfill_start, created_at)
+         VALUES ('n', 'o', 'r', 'u', '2020-01-01', '2020-01-01T00:00:00Z') RETURNING id`,
+      )
+      .get();
+    const repoId = r!.id;
+    const insert = db.query(
+      `INSERT INTO pull_requests
+        (repo_id, number, title, url, created_at, merged_at, updated_at,
+         ready_for_review_at, synced_at)
+       VALUES (?, ?, ?, 'u', ?, ?, ?, ?, ?)`,
+    );
+    // Merge "now" (in window). One PR merged immediately (TTM ~0, in cap); one
+    // marked ready a year before merge (TTM far over the default 7-day cap).
+    const now = new Date();
+    const nowISO = now.toISOString();
+    const yearAgoISO = new Date(now.getTime() - 365 * 86_400_000).toISOString();
+    insert.run(repoId, 1, "fix: fast", nowISO, nowISO, nowISO, nowISO, nowISO);
+    insert.run(repoId, 2, "fix: slow", yearAgoISO, nowISO, nowISO, yearAgoISO, nowISO);
+
+    const handler = createFetchHandler(db);
+    const res = await handler(new Request(`http://x/api/stats?repo=${repoId}`));
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      monthly: { count: number; timeToMerge: { excludedCount: number } }[];
+    };
+    const totalCount = body.monthly.reduce((s, m) => s + m.count, 0);
+    const totalExcluded = body.monthly.reduce(
+      (s, m) => s + m.timeToMerge.excludedCount,
+      0,
+    );
+    expect(totalCount).toBe(2); // both PRs counted, outlier included
+    expect(totalExcluded).toBe(1); // the slow PR dropped from the metric only
     db.close();
   });
 });

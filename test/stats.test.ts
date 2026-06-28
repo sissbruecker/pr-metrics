@@ -120,9 +120,9 @@ describe("aggregate", () => {
     const { monthly } = aggregate(rows, months);
     const june = monthly.find((m) => m.month === "2026-06")!;
     // All values: 10, 30, 50. median = 30, mean = 30.
-    expect(june.all.count).toBe(3);
-    expect(june.all.median).toBe(30);
-    expect(june.all.mean).toBe(30);
+    expect(june.count).toBe(3);
+    expect(june.timeToMerge.median).toBe(30);
+    expect(june.timeToMerge.mean).toBe(30);
   });
 
   test("includedCategories keeps only the selected categories", () => {
@@ -134,9 +134,9 @@ describe("aggregate", () => {
     const { monthly } = aggregate(rows, months, Infinity, new Set(["Fix"]));
     const june = monthly.find((m) => m.month === "2026-06")!;
     // Only the two Fix rows survive: median(10, 30) = 20.
-    expect(june.all.count).toBe(2);
-    expect(june.all.median).toBe(20);
-    expect(june.all.mean).toBe(20);
+    expect(june.count).toBe(2);
+    expect(june.timeToMerge.median).toBe(20);
+    expect(june.timeToMerge.mean).toBe(20);
   });
 
   test("an empty includedCategories set yields all-empty months", () => {
@@ -146,7 +146,8 @@ describe("aggregate", () => {
     ];
     const { monthly } = aggregate(rows, months, Infinity, new Set());
     for (const m of monthly) {
-      expect(m.all).toEqual({ count: 0, median: null, mean: null });
+      expect(m.count).toBe(0);
+      expect(m.timeToMerge).toEqual({ median: null, mean: null, excludedCount: 0 });
     }
   });
 
@@ -155,17 +156,18 @@ describe("aggregate", () => {
       row({ ttm: 10, title: "fix: a" }),
       row({ ttm: 1000, title: "chore: noisy outlier" }), // over threshold, but Chore excluded
     ];
-    const { monthly, excludedCount } = aggregate(rows, months, 100, new Set(["Fix"]));
+    const { monthly } = aggregate(rows, months, 100, new Set(["Fix"]));
     const june = monthly.find((m) => m.month === "2026-06")!;
-    expect(june.all.count).toBe(1); // only the Fix row
-    expect(excludedCount).toBe(0); // the Chore outlier was filtered out before the outlier check
+    expect(june.count).toBe(1); // only the Fix row
+    expect(june.timeToMerge.excludedCount).toBe(0); // the Chore outlier was filtered out before the outlier check
   });
 
   test("empty month → count 0, null median/mean", () => {
     const rows: StatsRow[] = [row({ merged_at: "2026-06-10T00:00:00Z" })];
     const { monthly } = aggregate(rows, months);
     const may = monthly.find((m) => m.month === "2026-05")!;
-    expect(may.all).toEqual({ count: 0, median: null, mean: null });
+    expect(may.count).toBe(0);
+    expect(may.timeToMerge).toEqual({ median: null, mean: null, excludedCount: 0 });
   });
 
   test("every month present and ordered", () => {
@@ -180,42 +182,44 @@ describe("aggregate", () => {
     ];
     const { monthly } = aggregate(rows, months);
     const june = monthly.find((m) => m.month === "2026-06")!;
-    expect(june.all.count).toBe(2);
-    expect(june.all.median).toBe(40);
-    expect(june.all.mean).toBe(40);
+    expect(june.count).toBe(2);
+    expect(june.timeToMerge.median).toBe(40);
+    expect(june.timeToMerge.mean).toBe(40);
   });
 
   test("rows outside the months window are ignored", () => {
     const rows: StatsRow[] = [row({ merged_at: "2020-01-01T00:00:00Z" })];
     const { monthly } = aggregate(rows, months);
     for (const m of monthly) {
-      expect(m.all.count).toBe(0);
+      expect(m.count).toBe(0);
     }
   });
 
-  test("rows above the threshold are excluded entirely; a row at the threshold is kept", () => {
+  test("rows above the threshold drop from the metric but still count; a row at the threshold feeds it", () => {
     const rows: StatsRow[] = [
       row({ ttm: 10, title: "fix: a" }),
-      row({ ttm: 100, title: "fix: b" }), // exactly at threshold → kept
-      row({ ttm: 101, title: "fix: c" }), // over → excluded
+      row({ ttm: 100, title: "fix: b" }), // exactly at threshold → feeds the metric
+      row({ ttm: 101, title: "fix: c" }), // over → excluded from median/mean, still counts
     ];
-    const { monthly, excludedCount } = aggregate(rows, months, 100);
+    const { monthly } = aggregate(rows, months, 100);
     const june = monthly.find((m) => m.month === "2026-06")!;
-    expect(june.all.count).toBe(2);
-    expect(june.all.median).toBe(55); // median(10, 100)
-    expect(june.all.mean).toBe(55);
-    expect(excludedCount).toBe(1);
+    expect(june.count).toBe(3); // outlier still counted in the denominator
+    expect(june.timeToMerge.median).toBe(55); // median(10, 100), over the 2 in-cap rows
+    expect(june.timeToMerge.mean).toBe(55);
+    expect(june.timeToMerge.excludedCount).toBe(1);
   });
 
-  test("null TTM is never excluded by the threshold", () => {
+  test("null TTM is never excluded by the threshold; the outlier still counts", () => {
     const rows: StatsRow[] = [
       row({ ttm: null, title: "fix: a" }),
-      row({ ttm: 1000, title: "fix: b" }), // over threshold → excluded
+      row({ ttm: 1000, title: "fix: b" }), // over threshold → excluded from median/mean
     ];
-    const { monthly, excludedCount } = aggregate(rows, months, 100);
+    const { monthly } = aggregate(rows, months, 100);
     const june = monthly.find((m) => m.month === "2026-06")!;
-    expect(june.all.count).toBe(1); // null kept, 1000 excluded
-    expect(excludedCount).toBe(1);
+    expect(june.count).toBe(2); // null + outlier both counted
+    expect(june.timeToMerge.excludedCount).toBe(1); // only the outlier
+    expect(june.timeToMerge.median).toBeNull(); // null didn't feed; outlier was capped
+    expect(june.timeToMerge.mean).toBeNull();
   });
 });
 
@@ -268,8 +272,8 @@ describe("fetchStatsRows + computeStats (in-memory DB)", () => {
     expect(result.windowStart).toBe("2025-07-01T00:00:00Z");
     expect(result.months).toHaveLength(12);
     const june = result.monthly.find((m) => m.month === "2026-06")!;
-    expect(june.all.count).toBe(2);
-    expect(june.all.median).toBe(300);
+    expect(june.count).toBe(2);
+    expect(june.timeToMerge.median).toBe(300);
     db.close();
   });
 
@@ -286,22 +290,22 @@ describe("fetchStatsRows + computeStats (in-memory DB)", () => {
       new Set(["Fix"]),
     );
     const june = result.monthly.find((m) => m.month === "2026-06")!;
-    expect(june.all.count).toBe(1); // only the Fix PR
-    expect(june.all.median).toBe(400);
+    expect(june.count).toBe(1); // only the Fix PR
+    expect(june.timeToMerge.median).toBe(400);
     db.close();
   });
 
-  test("computeStats applies the default 7-day threshold and reports excludedCount", () => {
+  test("computeStats applies the default 7-day threshold; outliers count but drop from the metric", () => {
     const db = openDb(":memory:");
     const repoId = seedRepo(db);
     insertPr(db, 1, repoId, "2026-06-10T00:00:00Z", 3600, "feat: normal");
     insertPr(db, 2, repoId, "2026-06-12T00:00:00Z", 30 * 86400, "feat: outlier");
     const result = computeStats(db, repoId, new Date("2026-06-26T00:00:00Z"));
-    expect(result.ttmThresholdSeconds).toBe(7 * 86400);
-    expect(result.excludedCount).toBe(1);
+    expect(result.thresholdSeconds).toBe(7 * 86400);
     const june = result.monthly.find((m) => m.month === "2026-06")!;
-    expect(june.all.count).toBe(1); // outlier dropped
-    expect(june.all.median).toBe(3600);
+    expect(june.count).toBe(2); // outlier still counted in the denominator
+    expect(june.timeToMerge.excludedCount).toBe(1);
+    expect(june.timeToMerge.median).toBe(3600); // over the single in-cap row
     db.close();
   });
 
@@ -311,10 +315,10 @@ describe("fetchStatsRows + computeStats (in-memory DB)", () => {
     insertPr(db, 1, repoId, "2026-06-10T00:00:00Z", 3600, "feat: normal");
     insertPr(db, 2, repoId, "2026-06-12T00:00:00Z", 30 * 86400, "feat: outlier");
     const result = computeStats(db, repoId, new Date("2026-06-26T00:00:00Z"), 60 * 86400);
-    expect(result.ttmThresholdSeconds).toBe(60 * 86400);
-    expect(result.excludedCount).toBe(0);
+    expect(result.thresholdSeconds).toBe(60 * 86400);
     const june = result.monthly.find((m) => m.month === "2026-06")!;
-    expect(june.all.count).toBe(2);
+    expect(june.count).toBe(2);
+    expect(june.timeToMerge.excludedCount).toBe(0);
     db.close();
   });
 });

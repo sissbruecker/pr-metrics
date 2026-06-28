@@ -10,8 +10,10 @@
  *
  *   GET /api/stats?repo=<id>[&ttmDays=<days>][&categories=<csv>]
  *     Resolve the repo by `repos.id` and return the aggregated trailing-12-month
- *     buckets from `computeStats` as JSON: one count / median / mean bucket per
- *     month. Optional `categories` is a comma-separated subset of
+ *     stats from `computeStats` as JSON: per month a shared `count` plus a
+ *     `timeToMerge` metric bucket ({median, mean, excludedCount}), with the
+ *     applied outlier cap in the top-level `thresholdSeconds`. Optional
+ *     `categories` is a comma-separated subset of
  *     the known categories; when present, only those categories' PRs feed the
  *     metric (empty string → none). When absent, all categories are included.
  *       - missing / non-numeric `repo`      → 400

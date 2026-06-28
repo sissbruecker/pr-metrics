@@ -15,13 +15,22 @@
  * The flow is:
  *   1. Compute the trailing-12-month window start from `now`.
  *   2. Run ONE parameterized query for the rows merged within that window.
- *   3. Derive each row's TTM, then bucket by month (`YYYY-MM`), computing
- *      count / median / mean per month over the rows whose derived category is
- *      currently included (the UI's category filter; all categories by default).
+ *   3. Derive each row's TTM, then bucket by month (`YYYY-MM`), computing a
+ *      shared `count` plus per-metric median / mean per month over the rows
+ *      whose derived category is currently included (the UI's category filter;
+ *      all categories by default).
  *
  * The aggregation is kept pure (it takes rows in, not a database) so it can be
  * tested without SQLite. The thin `fetchStatsRows` reader runs the query, and
  * `computeStats` ties window + fetch + aggregation together for an endpoint.
+ *
+ * Metric-ready shape: each month carries a shared `count` (the denominator) and
+ * one named metric bucket per metric (`timeToMerge` today). Adding a metric
+ * later means deriving a second per-row value, accumulating it, and emitting one
+ * more named bucket next to `timeToMerge` — nothing else moves. The outlier cap
+ * is applied per metric: it governs only whether a row's value feeds THAT
+ * metric's median/mean (and bumps THAT metric's `excludedCount`); the row still
+ * counts toward the shared `count`.
  *
  * Design decisions:
  * - Median uses the standard definition: sort the values, take the middle one
@@ -29,17 +38,16 @@
  *   even-length input. No rounding is applied — values stay as exact numbers
  *   (seconds), and presentation/rounding is left to the UI.
  * - Mean is the arithmetic mean, also unrounded.
- * - `count` reflects every PR merged that month (in that category, or all).
- *   Median/mean are
- *   computed over the non-null derived TTM values only; a null TTM (no usable
- *   `ready_for_review_at`) still contributes to `count` but is excluded from the
- *   median/mean inputs. In practice every merged PR has a usable TTM, so this is
- *   defensive — but it keeps `count` honest as "PRs merged" regardless of TTM
- *   availability.
- * - Empty months (no included PRs that month) report `count: 0` and
- *   `median: null` / `mean: null` — the "blank" the UI renders. All 12 months
- *   are always present and ordered, so tables/charts stay stable. Selecting no
- *   categories yields all-empty months.
+ * - `count` reflects every PR merged that month (in the included categories),
+ *   INCLUDING outliers above the threshold. Outliers and null-TTM rows still
+ *   count; they just don't feed the metric's median/mean. So `count` is the
+ *   stable denominator; the per-metric "feeding" total is
+ *   `count - timeToMerge.excludedCount` (minus any null-TTM rows). This keeps
+ *   `count` honest as "PRs merged" regardless of TTM availability or outliers.
+ * - Empty months (no included PRs that month) report `count: 0` and a bucket of
+ *   `median: null` / `mean: null` / `excludedCount: 0` — the "blank" the UI
+ *   renders. All 12 months are always present and ordered, so tables/charts stay
+ *   stable. Selecting no categories yields all-empty months.
  */
 
 import type { Database } from "bun:sqlite";
@@ -65,22 +73,32 @@ export interface StatsRow {
   title: string;
 }
 
-/** count / median / mean for one bucket. Median/mean are null when count is 0. */
-export interface BucketStats {
-  /** PRs merged in this bucket. */
-  count: number;
-  /** Median TTM in seconds over non-null derived TTMs, or null when none. */
+/**
+ * One metric's stats for a single month. Median/mean are over the in-cap,
+ * non-null derived values only (null when none survive); `excludedCount` is the
+ * number of this month's rows whose value exceeded the threshold and so was
+ * dropped from median/mean (it still counts toward the month's shared `count`).
+ */
+export interface MetricBucket {
+  /** Median in seconds over in-cap, non-null derived values, or null when none. */
   median: number | null;
-  /** Mean TTM in seconds over non-null derived TTMs, or null when none. */
+  /** Mean in seconds over in-cap, non-null derived values, or null when none. */
   mean: number | null;
+  /** Rows this month dropped from THIS metric's median/mean as outliers. */
+  excludedCount: number;
 }
 
 /** Stats for a single month, over the currently included categories. */
 export interface MonthStats {
   /** Month key, `YYYY-MM`, e.g. `2026-06`. */
   month: string;
-  /** Stats across all included categories for this month. */
-  all: BucketStats;
+  /**
+   * Total PRs merged this month in the included categories, INCLUDING outliers
+   * and null-TTM rows — the shared denominator across all metric buckets.
+   */
+  count: number;
+  /** Time-to-merge metric bucket for this month. */
+  timeToMerge: MetricBucket;
 }
 
 /** The full aggregated result a JSON endpoint / UI can consume directly. */
@@ -92,13 +110,11 @@ export interface StatsResult {
   /** One entry per month, in `months` order. */
   monthly: MonthStats[];
   /**
-   * Number of PRs in the window dropped as outliers because their derived TTM
-   * exceeded `ttmThresholdSeconds` (for a footnote). Excluded PRs count toward
-   * neither `count` nor median/mean.
+   * The single shared outlier threshold actually applied, in seconds. A row
+   * whose derived metric value exceeds this is dropped from that metric's
+   * median/mean (and tallied in the bucket's `excludedCount`), but still counts.
    */
-  excludedCount: number;
-  /** The TTM outlier threshold actually applied, in seconds. */
-  ttmThresholdSeconds: number;
+  thresholdSeconds: number;
 }
 
 /**
@@ -163,22 +179,24 @@ export function windowMonths(now: Date): string[] {
 
 /**
  * Pure aggregation. Buckets `rows` by month (`substr(merged_at, 1, 7)`) and
- * computes count / median / mean per month over the rows whose derived category
- * is included. Always emits all `months` in order (empty → count 0, null
- * median/mean).
+ * computes a shared `count` plus the per-metric `timeToMerge` bucket per month
+ * over the rows whose derived category is included. Always emits all `months` in
+ * order (empty → count 0, null median/mean, excludedCount 0).
  *
  * `includedCategories` is the category filter: when provided, a row whose
- * derived category is not in the set is dropped before any other accounting —
- * it contributes to neither `count`, median/mean nor
- * `excludedCount`. When `undefined` (the default) every category is included.
- * An empty set therefore yields all-empty months.
+ * derived category is not in the set is dropped before any other accounting — it
+ * contributes to nothing, not even the per-metric `excludedCount` tally. When
+ * `undefined` (the default) every category is included. An empty set therefore
+ * yields all-empty months.
  *
- * The TTM is derived per row (from `ready_for_review_at` + `merged_at`); rows
- * whose derived TTM exceeds `thresholdSeconds` are treated as outliers and
- * dropped entirely — they contribute to neither `count` nor median/mean,
- * but are tallied in `excludedCount`. Rows with a null TTM
- * have nothing to exceed the threshold and are never excluded. `thresholdSeconds`
- * defaults to `Infinity` (no filtering).
+ * Once a row passes the window + category filters it is counted (`count += 1`)
+ * unconditionally — outliers stay in the denominator. The TTM is then derived
+ * per row (from `ready_for_review_at` + `merged_at`); the cap is applied PER
+ * METRIC: a derived TTM above `thresholdSeconds` is dropped from the
+ * time-to-merge median/mean and tallied in `timeToMerge.excludedCount`, but the
+ * row still counts. A null TTM has nothing to exceed the threshold (never an
+ * outlier) and simply doesn't feed median/mean. `thresholdSeconds` defaults to
+ * `Infinity` (no filtering).
  *
  * Rows whose month falls outside `months` are ignored (defensive — the query
  * already filters by the window start).
@@ -190,27 +208,36 @@ export function aggregate(
   includedCategories?: Set<Category>,
 ): {
   monthly: MonthStats[];
-  excludedCount: number;
 } {
   const monthSet = new Set(months);
 
-  // Per-month accumulators: count and the TTM values feeding median/mean.
+  // Per-month accumulators: the shared count, the in-cap TTM values feeding
+  // median/mean, and the per-metric outlier tally.
   interface Acc {
     count: number;
     ttms: number[];
+    ttmExcluded: number;
   }
   const accByMonth = new Map<string, Acc>();
-
-  let excludedCount = 0;
 
   for (const row of rows) {
     const month = row.merged_at.slice(0, 7);
     if (!monthSet.has(month)) continue;
 
     // Apply the category filter first, so excluded-category rows count toward
-    // nothing — not even the outlier (`excludedCount`) tally below.
+    // nothing — not even the per-metric outlier tally below.
     const category = categorize(row.title);
     if (includedCategories && !includedCategories.has(category)) continue;
+
+    let acc = accByMonth.get(month);
+    if (!acc) {
+      acc = { count: 0, ttms: [], ttmExcluded: 0 };
+      accByMonth.set(month, acc);
+    }
+
+    // A surviving row always counts (outliers stay in the denominator). The cap
+    // only governs whether its value feeds the metric below.
+    acc.count += 1;
 
     // Derive the TTM in memory from the stored start point + merge time. Null
     // when there is no usable start point (defensive — merged PRs always have
@@ -220,37 +247,37 @@ export function aggregate(
         ? null
         : measureTtmSeconds(row.ready_for_review_at, row.merged_at);
 
-    // Drop outliers entirely: a too-large TTM contributes to nothing but the
-    // excluded tally. A null TTM has nothing to compare and is never excluded.
+    // Per-metric filtering: a too-large TTM is excluded from this metric's
+    // median/mean (and tallied), but the row already counted above. A null TTM
+    // has nothing to compare and is never an outlier; it just doesn't feed.
     if (ttmSeconds !== null && ttmSeconds > thresholdSeconds) {
-      excludedCount += 1;
-      continue;
+      acc.ttmExcluded += 1;
+    } else if (ttmSeconds !== null) {
+      acc.ttms.push(ttmSeconds);
     }
-
-    let acc = accByMonth.get(month);
-    if (!acc) {
-      acc = { count: 0, ttms: [] };
-      accByMonth.set(month, acc);
-    }
-
-    // count reflects PRs merged (including null-ttm rows);
-    // median/mean inputs exclude null TTMs.
-    acc.count += 1;
-    if (ttmSeconds !== null) acc.ttms.push(ttmSeconds);
   }
 
   const monthly: MonthStats[] = months.map((month) => {
     const acc = accByMonth.get(month);
     if (!acc) {
-      return { month, all: { count: 0, median: null, mean: null } };
+      return {
+        month,
+        count: 0,
+        timeToMerge: { median: null, mean: null, excludedCount: 0 },
+      };
     }
     return {
       month,
-      all: { count: acc.count, median: median(acc.ttms), mean: mean(acc.ttms) },
+      count: acc.count,
+      timeToMerge: {
+        median: median(acc.ttms),
+        mean: mean(acc.ttms),
+        excludedCount: acc.ttmExcluded,
+      },
     };
   });
 
-  return { monthly, excludedCount };
+  return { monthly };
 }
 
 /**
@@ -275,8 +302,9 @@ export function fetchStatsRows(
 /**
  * Top-level entry point: compute the window, fetch the rows, and aggregate.
  * `now` is injected for deterministic windows in tests; defaults to the current
- * time. `thresholdSeconds` is the TTM outlier cap (PRs above it are excluded);
- * it defaults to the 7-day default and is overridden per request by the server.
+ * time. `thresholdSeconds` is the shared outlier cap (a PR above it drops from
+ * the metric's median/mean but still counts); it defaults to the 7-day default
+ * and is overridden per request by the server.
  * `includedCategories` is the category filter (see `aggregate`); `undefined`
  * includes every category.
  */
@@ -290,7 +318,7 @@ export function computeStats(
   const windowStart = computeWindowStart(now);
   const months = windowMonths(now);
   const rows = filterRows(fetchStatsRows(db, repoId, windowStart));
-  const { monthly, excludedCount } = aggregate(
+  const { monthly } = aggregate(
     rows,
     months,
     thresholdSeconds,
@@ -300,7 +328,6 @@ export function computeStats(
     windowStart,
     months,
     monthly,
-    excludedCount,
-    ttmThresholdSeconds: thresholdSeconds,
+    thresholdSeconds,
   };
 }

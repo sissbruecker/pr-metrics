@@ -124,9 +124,9 @@ function renderTable(stats) {
     const row = tbody.insertRow();
     const cells = [
       m.month,
-      String(m.all.count),
-      formatCell("median", m.all.median),
-      formatCell("mean", m.all.mean),
+      String(m.count - m.timeToMerge.excludedCount),
+      formatCell("median", m.timeToMerge.median),
+      formatCell("mean", m.timeToMerge.mean),
     ];
     cells.forEach((text, i) => {
       const cell = i === 0 ? document.createElement("th") : row.insertCell();
@@ -201,8 +201,8 @@ function renderChart(stats) {
   const c = ensureChart();
   const labels = stats.months;
 
-  const medianRaw = stats.monthly.map((m) => m.all.median);
-  const meanRaw = stats.monthly.map((m) => m.all.mean);
+  const medianRaw = stats.monthly.map((m) => m.timeToMerge.median);
+  const meanRaw = stats.monthly.map((m) => m.timeToMerge.mean);
 
   // Shared marker styling: a white dot with a colored ring, per the design.
   const point = {
@@ -258,7 +258,8 @@ function renderChart(stats) {
   cb.footer = (items) => {
     const i = items[0]?.dataIndex;
     if (i === undefined) return "";
-    return `${stats.monthly[i].all.count} PRs`;
+    const m = stats.monthly[i];
+    return `${m.count - m.timeToMerge.excludedCount} PRs`;
   };
   c.update();
 }
@@ -272,8 +273,11 @@ function render() {
   renderTable(currentStats);
   renderChart(currentStats);
 
-  const ex = currentStats.excludedCount;
-  const days = currentStats.ttmThresholdSeconds / SECONDS_PER_DAY;
+  const ex = currentStats.monthly.reduce(
+    (s, m) => s + m.timeToMerge.excludedCount,
+    0,
+  );
+  const days = currentStats.thresholdSeconds / SECONDS_PER_DAY;
   const exPr = ex === 1 ? "PR was" : "PRs were";
   const dayLabel = days === 1 ? "day" : "days";
   els.footnote.textContent =
@@ -393,7 +397,7 @@ async function init() {
   // input (it may have been overridden via env var).
   await loadStats(repos[0].id);
   if (currentStats) {
-    lastThresholdDays = currentStats.ttmThresholdSeconds / SECONDS_PER_DAY;
+    lastThresholdDays = currentStats.thresholdSeconds / SECONDS_PER_DAY;
     els.ttmThreshold.value = String(lastThresholdDays);
   }
 }
