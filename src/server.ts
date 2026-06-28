@@ -11,8 +11,7 @@
  *   GET /api/stats?repo=<id>[&ttmDays=<days>][&categories=<csv>]
  *     Resolve the repo by `repos.id` and return the aggregated trailing-12-month
  *     stats from `computeStats` as JSON: per month a shared `count` plus a
- *     `timeToMerge` metric bucket ({median, mean, excludedCount}), with the
- *     applied outlier cap in the top-level `thresholdSeconds`. Optional
+ *     `timeToMerge` metric bucket ({median, mean, excludedCount}). Optional
  *     `categories` is a comma-separated subset of
  *     the known categories; when present, only those categories' PRs feed the
  *     metric (empty string → none). When absent, all categories are included.
@@ -88,11 +87,6 @@ export interface CreateServerOptions {
   port?: number;
   /** Hostname to bind. Defaults to Bun's default (all interfaces). */
   hostname?: string;
-  /**
-   * Default TTM outlier threshold in seconds, used when a request omits the
-   * `ttmDays` query param. Defaults to the 7-day default.
-   */
-  ttmThresholdSeconds?: number;
 }
 
 /** A repo plus its stored PR count, as returned by `GET /api/repos`. */
@@ -163,7 +157,7 @@ function findRepo(db: Database, id: number): RepoRow | null {
 }
 
 /** Handle `GET /api/stats`. */
-function handleStats(db: Database, url: URL, defaultThresholdSeconds: number): Response {
+function handleStats(db: Database, url: URL): Response {
   const repoParam = url.searchParams.get("repo");
   if (repoParam === null || repoParam.trim() === "") {
     return errorResponse(400, "Missing required query parameter: repo");
@@ -176,8 +170,8 @@ function handleStats(db: Database, url: URL, defaultThresholdSeconds: number): R
     return errorResponse(404, `Unknown repo id: ${repoId}`);
   }
 
-  // Optional TTM outlier threshold, in days. Absent → use the server default.
-  let thresholdSeconds = defaultThresholdSeconds;
+  // Optional TTM outlier threshold, in days. Absent → use the default cap.
+  let thresholdSeconds = DEFAULT_TTM_THRESHOLD_DAYS * SECONDS_PER_DAY;
   const ttmDaysParam = url.searchParams.get("ttmDays");
   if (ttmDaysParam !== null) {
     const ttmDays = Number(ttmDaysParam);
@@ -235,7 +229,6 @@ async function handleStatic(pathname: string): Promise<Response> {
  */
 export function createFetchHandler(
   db: Database,
-  defaultThresholdSeconds: number = DEFAULT_TTM_THRESHOLD_DAYS * SECONDS_PER_DAY,
 ): (req: Request) => Promise<Response> {
   return async (req: Request): Promise<Response> => {
     const url = new URL(req.url);
@@ -249,7 +242,7 @@ export function createFetchHandler(
 
     switch (url.pathname) {
       case "/api/stats":
-        return handleStats(db, url, defaultThresholdSeconds);
+        return handleStats(db, url);
       case "/api/repos":
         return json(listRepos(db));
       case "/api/categories":
@@ -271,7 +264,7 @@ export function createServer(
   options: CreateServerOptions,
 ): ReturnType<typeof Bun.serve> {
   const db = options.db ?? openDb(options.dbPath ?? ":memory:");
-  const handler = createFetchHandler(db, options.ttmThresholdSeconds);
+  const handler = createFetchHandler(db);
   return Bun.serve({
     port: options.port ?? 3000,
     hostname: options.hostname,

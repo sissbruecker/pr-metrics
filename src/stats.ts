@@ -109,12 +109,6 @@ export interface StatsResult {
   months: string[];
   /** One entry per month, in `months` order. */
   monthly: MonthStats[];
-  /**
-   * The single shared outlier threshold actually applied, in seconds. A row
-   * whose derived metric value exceeds this is dropped from that metric's
-   * median/mean (and tallied in the bucket's `excludedCount`), but still counts.
-   */
-  thresholdSeconds: number;
 }
 
 /**
@@ -328,6 +322,5 @@ export function computeStats(
     windowStart,
     months,
     monthly,
-    thresholdSeconds,
   };
 }

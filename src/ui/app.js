@@ -27,7 +27,6 @@
 import { formatDuration, BLANK } from "/format.js";
 
 const SECONDS_PER_HOUR = 3600;
-const SECONDS_PER_DAY = 86400;
 
 // ---- Module state -----------------------------------------------------------
 
@@ -43,9 +42,9 @@ let currentStats = null;
 /** The single Chart.js instance, created lazily. */
 let chart = null;
 /**
- * Last valid TTM threshold (in days) the UI sent to the server. Seeded from the
- * server's configured default on first load, then updated as the user edits the
- * input; used to revert when the input holds an invalid value.
+ * Last valid TTM threshold (in days) the UI sent to the server. Initialized to
+ * the input's default and updated as the user edits the input; used both for
+ * the outlier footnote and to revert when the input holds an invalid value.
  */
 let lastThresholdDays = 7;
 
@@ -277,7 +276,7 @@ function render() {
     (s, m) => s + m.timeToMerge.excludedCount,
     0,
   );
-  const days = currentStats.thresholdSeconds / SECONDS_PER_DAY;
+  const days = lastThresholdDays;
   const exPr = ex === 1 ? "PR was" : "PRs were";
   const dayLabel = days === 1 ? "day" : "days";
   els.footnote.textContent =
@@ -392,14 +391,9 @@ async function init() {
     loadStats(els.repoSelect.value, currentThresholdDays(), selectedCategories);
   });
 
-  // Initial load for the auto-selected first repo. Omit the threshold so the
-  // server applies its configured default, then reflect that default in the
-  // input (it may have been overridden via env var).
-  await loadStats(repos[0].id);
-  if (currentStats) {
-    lastThresholdDays = currentStats.thresholdSeconds / SECONDS_PER_DAY;
-    els.ttmThreshold.value = String(lastThresholdDays);
-  }
+  // Initial load for the auto-selected first repo, using the default threshold
+  // shown in the input.
+  await loadStats(repos[0].id, currentThresholdDays(), selectedCategories ?? undefined);
 }
 
 init();

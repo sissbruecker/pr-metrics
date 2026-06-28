@@ -301,7 +301,6 @@ describe("fetchStatsRows + computeStats (in-memory DB)", () => {
     insertPr(db, 1, repoId, "2026-06-10T00:00:00Z", 3600, "feat: normal");
     insertPr(db, 2, repoId, "2026-06-12T00:00:00Z", 30 * 86400, "feat: outlier");
     const result = computeStats(db, repoId, new Date("2026-06-26T00:00:00Z"));
-    expect(result.thresholdSeconds).toBe(7 * 86400);
     const june = result.monthly.find((m) => m.month === "2026-06")!;
     expect(june.count).toBe(2); // outlier still counted in the denominator
     expect(june.timeToMerge.excludedCount).toBe(1);
@@ -315,7 +314,6 @@ describe("fetchStatsRows + computeStats (in-memory DB)", () => {
     insertPr(db, 1, repoId, "2026-06-10T00:00:00Z", 3600, "feat: normal");
     insertPr(db, 2, repoId, "2026-06-12T00:00:00Z", 30 * 86400, "feat: outlier");
     const result = computeStats(db, repoId, new Date("2026-06-26T00:00:00Z"), 60 * 86400);
-    expect(result.thresholdSeconds).toBe(60 * 86400);
     const june = result.monthly.find((m) => m.month === "2026-06")!;
     expect(june.count).toBe(2);
     expect(june.timeToMerge.excludedCount).toBe(0);
