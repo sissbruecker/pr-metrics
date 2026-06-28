@@ -275,7 +275,6 @@ describe("ready_for_review_at start-point logic (all five cases)", () => {
     const result = extractPrMetadata(input);
     expect(result.ready_for_review_at).toBe("2026-03-01T10:00:00Z");
     expect(result.was_ever_draft).toBe(0);
-    expect(result.ttm_is_approximate).toBe(0);
   });
 
   test("opened as draft, marked ready once → start = the ReadyForReviewEvent timestamp", () => {
@@ -287,7 +286,6 @@ describe("ready_for_review_at start-point logic (all five cases)", () => {
     const result = extractPrMetadata(input);
     expect(result.ready_for_review_at).toBe("2026-03-02T12:00:00Z");
     expect(result.was_ever_draft).toBe(1);
-    expect(result.ttm_is_approximate).toBe(0);
   });
 
   test("toggled multiple times → start = LAST ready transition before merge (sorted app-side, post-merge excluded)", () => {
@@ -310,7 +308,6 @@ describe("ready_for_review_at start-point logic (all five cases)", () => {
     const result = extractPrMetadata(input);
     expect(result.ready_for_review_at).toBe("2026-03-08T00:00:00Z");
     expect(result.was_ever_draft).toBe(1);
-    expect(result.ttm_is_approximate).toBe(0);
   });
 
   test("merged while still draft (a): isDraft true → fall back to createdAt", () => {
@@ -343,7 +340,7 @@ describe("ready_for_review_at start-point logic (all five cases)", () => {
     expect(result.was_ever_draft).toBe(1);
   });
 
-  test("missing/unusable history: unparseable transition timestamp → fall back to createdAt AND approximate", () => {
+  test("missing/unusable history: unparseable transition timestamp → fall back to createdAt", () => {
     const input = prNode({
       createdAt: "2026-03-01T00:00:00Z",
       mergedAt: "2026-03-05T00:00:00Z",
@@ -351,7 +348,6 @@ describe("ready_for_review_at start-point logic (all five cases)", () => {
     });
     const result = extractPrMetadata(input);
     expect(result.ready_for_review_at).toBe("2026-03-01T00:00:00Z");
-    expect(result.ttm_is_approximate).toBe(1);
     expect(result.was_ever_draft).toBe(1);
   });
 });

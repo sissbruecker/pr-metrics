@@ -29,8 +29,8 @@
  *   even-length input. No rounding is applied — values stay as exact numbers
  *   (seconds), and presentation/rounding is left to the UI.
  * - Mean is the arithmetic mean, also unrounded.
- * - `count` reflects every PR merged that month (in that category, or all),
- *   including PRs flagged as having an approximate TTM. Median/mean are
+ * - `count` reflects every PR merged that month (in that category, or all).
+ *   Median/mean are
  *   computed over the non-null derived TTM values only; a null TTM (no usable
  *   `ready_for_review_at`) still contributes to `count` but is excluded from the
  *   median/mean inputs. In practice every merged PR has a usable TTM, so this is
@@ -40,9 +40,6 @@
  *   `median: null` / `mean: null` — the "blank" the UI renders. All 12 months
  *   are always present and ordered, so tables/charts stay stable. Selecting no
  *   categories yields all-empty months.
- * - Approximate-TTM PRs are INCLUDED in the stats. Separately, the total number
- *   of approximate PRs across the window is reported as `approximateCount` for
- *   a UI footnote.
  */
 
 import type { Database } from "bun:sqlite";
@@ -64,15 +61,13 @@ export interface StatsRow {
    * (a merged PR always has one in practice), which yields a null TTM.
    */
   ready_for_review_at: string | null;
-  /** `0`/`1` — whether the TTM is an approximation. */
-  ttm_is_approximate: number;
   /** Raw PR title, used to derive the category. */
   title: string;
 }
 
 /** count / median / mean for one bucket. Median/mean are null when count is 0. */
 export interface BucketStats {
-  /** PRs merged in this bucket (includes approximate-TTM PRs). */
+  /** PRs merged in this bucket. */
   count: number;
   /** Median TTM in seconds over non-null derived TTMs, or null when none. */
   median: number | null;
@@ -102,12 +97,10 @@ export interface StatsResult {
   categories: Category[];
   /** One entry per month, in `months` order. */
   monthly: MonthStats[];
-  /** Total number of approximate-TTM PRs in the window (for a footnote). */
-  approximateCount: number;
   /**
    * Number of PRs in the window dropped as outliers because their derived TTM
    * exceeded `ttmThresholdSeconds` (for a footnote). Excluded PRs count toward
-   * neither `count` nor median/mean nor `approximateCount`.
+   * neither `count` nor median/mean.
    */
   excludedCount: number;
   /** The TTM outlier threshold actually applied, in seconds. */
@@ -178,18 +171,18 @@ export function windowMonths(now: Date): string[] {
  * Pure aggregation. Buckets `rows` by month (`substr(merged_at, 1, 7)`) and
  * computes count / median / mean per month over the rows whose derived category
  * is included. Always emits all `months` in order (empty → count 0, null
- * median/mean). Also returns the total count of approximate-TTM rows.
+ * median/mean).
  *
  * `includedCategories` is the category filter: when provided, a row whose
  * derived category is not in the set is dropped before any other accounting —
- * it contributes to neither `count`, median/mean, `approximateCount` nor
+ * it contributes to neither `count`, median/mean nor
  * `excludedCount`. When `undefined` (the default) every category is included.
  * An empty set therefore yields all-empty months.
  *
  * The TTM is derived per row (from `ready_for_review_at` + `merged_at`); rows
  * whose derived TTM exceeds `thresholdSeconds` are treated as outliers and
- * dropped entirely — they contribute to neither `count` nor median/mean nor
- * `approximateCount`, but are tallied in `excludedCount`. Rows with a null TTM
+ * dropped entirely — they contribute to neither `count` nor median/mean,
+ * but are tallied in `excludedCount`. Rows with a null TTM
  * have nothing to exceed the threshold and are never excluded. `thresholdSeconds`
  * defaults to `Infinity` (no filtering).
  *
@@ -203,7 +196,6 @@ export function aggregate(
   includedCategories?: Set<Category>,
 ): {
   monthly: MonthStats[];
-  approximateCount: number;
   excludedCount: number;
 } {
   const monthSet = new Set(months);
@@ -215,7 +207,6 @@ export function aggregate(
   }
   const accByMonth = new Map<string, Acc>();
 
-  let approximateCount = 0;
   let excludedCount = 0;
 
   for (const row of rows) {
@@ -242,15 +233,13 @@ export function aggregate(
       continue;
     }
 
-    if (row.ttm_is_approximate === 1) approximateCount += 1;
-
     let acc = accByMonth.get(month);
     if (!acc) {
       acc = { count: 0, ttms: [] };
       accByMonth.set(month, acc);
     }
 
-    // count reflects PRs merged (including approximate / null-ttm rows);
+    // count reflects PRs merged (including null-ttm rows);
     // median/mean inputs exclude null TTMs.
     acc.count += 1;
     if (ttmSeconds !== null) acc.ttms.push(ttmSeconds);
@@ -267,7 +256,7 @@ export function aggregate(
     };
   });
 
-  return { monthly, approximateCount, excludedCount };
+  return { monthly, excludedCount };
 }
 
 /**
@@ -280,7 +269,7 @@ export function fetchStatsRows(
   windowStart: string,
 ): StatsRow[] {
   const stmt = db.query<StatsRow, [number, string]>(
-    `SELECT merged_at, ready_for_review_at, ttm_is_approximate, title
+    `SELECT merged_at, ready_for_review_at, title
        FROM pull_requests
       WHERE repo_id = ?
         AND merged_at >= ?
@@ -307,7 +296,7 @@ export function computeStats(
   const windowStart = computeWindowStart(now);
   const months = windowMonths(now);
   const rows = filterRows(fetchStatsRows(db, repoId, windowStart));
-  const { monthly, approximateCount, excludedCount } = aggregate(
+  const { monthly, excludedCount } = aggregate(
     rows,
     months,
     thresholdSeconds,
@@ -318,7 +307,6 @@ export function computeStats(
     months,
     categories: [...CATEGORIES],
     monthly,
-    approximateCount,
     excludedCount,
     ttmThresholdSeconds: thresholdSeconds,
   };

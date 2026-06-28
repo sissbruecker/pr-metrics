@@ -13,9 +13,8 @@
  *   stored timestamps (see {@link computeStats} / `src/ttm.ts`), so the metric
  *   definition can change without re-syncing or recomputing the database.
  * - The `ready_for_review_at` start point IS persisted (the draft-resolution it
- *   depends on uses sync-time state not otherwise stored), as is the
- *   `ttm_is_approximate` data-availability flag — both are sync-time facts, not
- *   metric definitions.
+ *   depends on uses sync-time state not otherwise stored) — a sync-time fact,
+ *   not a metric definition.
  * - Boolean flags are stored as INTEGER `0`/`1`.
  */
 
@@ -60,8 +59,6 @@ export interface PullRequestRow {
   first_review_at: string | null;
   /** Computed start point for the time-to-merge measurement. */
   ready_for_review_at: string | null;
-  /** `0`/`1` — whether the TTM is an approximation. */
-  ttm_is_approximate: number;
   /** `0`/`1` — whether the PR was ever in draft state. */
   was_ever_draft: number;
   base_branch: string | null;
@@ -128,7 +125,6 @@ CREATE TABLE IF NOT EXISTS pull_requests (
   updated_at TEXT NOT NULL,
   first_review_at TEXT,
   ready_for_review_at TEXT,
-  ttm_is_approximate INTEGER NOT NULL DEFAULT 0,
   was_ever_draft INTEGER NOT NULL DEFAULT 0,
   base_branch TEXT,
   head_branch TEXT,

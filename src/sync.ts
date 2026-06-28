@@ -141,8 +141,8 @@ function isoDate(date: Date): string {
 // - Merged while still a draft (the last transition before merge is a
 //   convert-to-draft, or `isDraft` is true at merge) → no usable ready event,
 //   fall back to `created_at`.
-// - Draft history unavailable/missing → fall back to `created_at` and flag the
-//   PR as approximate.
+// - Draft history unavailable/missing (e.g. an unparseable transition
+//   timestamp) → fall back to `created_at`.
 // ---------------------------------------------------------------------------
 
 /** GraphQL typename for a "marked ready for review" transition. */
@@ -174,8 +174,6 @@ export interface DraftEvent {
 export interface PrMetadata {
   /** Computed start point for the TTM measurement (ISO timestamp). */
   ready_for_review_at: string;
-  /** `0`/`1` — whether the TTM start point is an approximation. */
-  ttm_is_approximate: 0 | 1;
   /** `0`/`1` — whether the PR was ever in draft state. */
   was_ever_draft: 0 | 1;
   /** First review's `submittedAt`, or `null` when there are no reviews. */
@@ -288,18 +286,6 @@ export function extractPrMetadata(pr: PullRequestNode): PrMetadata {
     pr.isDraft,
   );
 
-  // Draft history is present (we parsed transitions from the node), but it is
-  // only *usable* if every transition timestamp parses. An unparseable
-  // timestamp gets silently dropped from the merge-window filter, which quietly
-  // collapses the start point back to created_at — so the result is no longer
-  // exact and must be flagged. This is the node-derivable "draft history
-  // present but unusable" case. The broader "the timeline could not be
-  // retrieved at all" case is not detectable here (we only see the nodes we
-  // were given).
-  const draftHistoryUnusable =
-    events.length > 0 && events.some((e) => Number.isNaN(Date.parse(e.at)));
-  const ttmIsApproximate: 0 | 1 = draftHistoryUnusable ? 1 : 0;
-
   // first_review_at: the first review's submittedAt (the query selects only the
   // earliest review), null when there are no reviews.
   const firstReview = pr.reviews.nodes[0];
@@ -307,7 +293,6 @@ export function extractPrMetadata(pr: PullRequestNode): PrMetadata {
 
   return {
     ready_for_review_at: readyForReviewAt,
-    ttm_is_approximate: ttmIsApproximate,
     was_ever_draft: wasEverDraft,
     first_review_at: firstReviewAt,
     draft_events: events,
@@ -322,14 +307,14 @@ const UPSERT_SQL = `
 INSERT INTO pull_requests (
   repo_id, number, title, body, author, url,
   created_at, merged_at, closed_at, updated_at,
-  first_review_at, ready_for_review_at, ttm_is_approximate, was_ever_draft,
+  first_review_at, ready_for_review_at, was_ever_draft,
   base_branch, head_branch, additions, deletions, changed_files,
   commit_count, review_count, comment_count, milestone,
   labels, assignees, requested_reviewers, draft_events, synced_at
 ) VALUES (
   $repo_id, $number, $title, $body, $author, $url,
   $created_at, $merged_at, $closed_at, $updated_at,
-  $first_review_at, $ready_for_review_at, $ttm_is_approximate, $was_ever_draft,
+  $first_review_at, $ready_for_review_at, $was_ever_draft,
   $base_branch, $head_branch, $additions, $deletions, $changed_files,
   $commit_count, $review_count, $comment_count, $milestone,
   $labels, $assignees, $requested_reviewers, $draft_events, $synced_at
@@ -345,7 +330,6 @@ ON CONFLICT(repo_id, number) DO UPDATE SET
   updated_at = excluded.updated_at,
   first_review_at = excluded.first_review_at,
   ready_for_review_at = excluded.ready_for_review_at,
-  ttm_is_approximate = excluded.ttm_is_approximate,
   was_ever_draft = excluded.was_ever_draft,
   base_branch = excluded.base_branch,
   head_branch = excluded.head_branch,
@@ -389,7 +373,6 @@ function toUpsertParams(
     $updated_at: node.updatedAt,
     $first_review_at: meta.first_review_at,
     $ready_for_review_at: meta.ready_for_review_at,
-    $ttm_is_approximate: meta.ttm_is_approximate,
     $was_ever_draft: meta.was_ever_draft,
     $base_branch: node.baseRefName,
     $head_branch: node.headRefName,

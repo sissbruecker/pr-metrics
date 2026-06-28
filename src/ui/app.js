@@ -276,15 +276,8 @@ function render() {
   const days = currentStats.ttmThresholdSeconds / SECONDS_PER_DAY;
   const exPr = ex === 1 ? "PR was" : "PRs were";
   const dayLabel = days === 1 ? "day" : "days";
-  const exclusion =
+  els.footnote.textContent =
     `${ex} ${exPr} excluded as outliers (time-to-merge over ${days} ${dayLabel}).`;
-
-  const n = currentStats.approximateCount;
-  const pr = n === 1 ? "PR has" : "PRs have";
-  const approximate =
-    `${n} ${pr} an approximate time-to-merge in this 12-month window.`;
-
-  els.footnote.textContent = `${exclusion} ${approximate}`;
 }
 
 // ---- Data fetching ----------------------------------------------------------

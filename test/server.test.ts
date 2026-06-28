@@ -16,8 +16,8 @@ function seed(): { db: ReturnType<typeof openDb>; repoId: number } {
   const insert = db.query(
     `INSERT INTO pull_requests
       (repo_id, number, title, url, created_at, merged_at, updated_at,
-       ready_for_review_at, ttm_is_approximate, synced_at)
-     VALUES (?, ?, ?, 'u', ?, ?, ?, ?, 0, ?)`,
+       ready_for_review_at, synced_at)
+     VALUES (?, ?, ?, 'u', ?, ?, ?, ?, ?)`,
   );
   // Two PRs merged "yesterday" so they land in the current window.
   const mergedAt = now;
