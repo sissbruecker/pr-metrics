@@ -340,10 +340,15 @@ async function loadStats(repoId, days, categories) {
 }
 
 async function init() {
-  let repos;
+  // Repos and the category list are independent resources; fetch them together.
+  let repos, categories;
   try {
-    const res = await fetch("/api/repos");
-    repos = await res.json();
+    const [reposRes, categoriesRes] = await Promise.all([
+      fetch("/api/repos"),
+      fetch("/api/categories"),
+    ]);
+    repos = await reposRes.json();
+    categories = await categoriesRes.json();
   } catch (err) {
     els.emptyMessage.textContent = "Failed to load repositories.";
     els.emptyMessage.classList.remove("hidden");
@@ -362,6 +367,7 @@ async function init() {
     opt.textContent = `${r.owner}/${r.repo} (${r.pr_count})`;
     els.repoSelect.appendChild(opt);
   }
+  buildCategoryFilter(categories);
   els.controls.classList.remove("hidden");
 
   // Wire up controls. Repo and threshold changes re-fetch while preserving the
@@ -389,7 +395,6 @@ async function init() {
   if (currentStats) {
     lastThresholdDays = currentStats.ttmThresholdSeconds / SECONDS_PER_DAY;
     els.ttmThreshold.value = String(lastThresholdDays);
-    buildCategoryFilter(currentStats.categories);
   }
 }
 

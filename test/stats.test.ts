@@ -9,7 +9,6 @@ import {
   windowMonths,
   type StatsRow,
 } from "../src/stats.ts";
-import { CATEGORIES } from "../src/categorize.ts";
 import { computeTtmSeconds } from "../src/ttm.ts";
 import { openDb } from "../src/db.ts";
 
@@ -271,7 +270,6 @@ describe("fetchStatsRows + computeStats (in-memory DB)", () => {
     const june = result.monthly.find((m) => m.month === "2026-06")!;
     expect(june.all.count).toBe(2);
     expect(june.all.median).toBe(300);
-    expect(result.categories).toEqual([...CATEGORIES]);
     db.close();
   });
 

@@ -43,7 +43,7 @@
  */
 
 import type { Database } from "bun:sqlite";
-import { categorize, CATEGORIES, type Category } from "./categorize.ts";
+import { categorize, type Category } from "./categorize.ts";
 import { DEFAULT_TTM_THRESHOLD_DAYS } from "./config.ts";
 import { filterRows } from "./filter.ts";
 import { computeTtmSeconds } from "./ttm.ts";
@@ -89,12 +89,6 @@ export interface StatsResult {
   windowStart: string;
   /** The 12 month keys (`YYYY-MM`) in chronological order. */
   months: string[];
-  /**
-   * Canonical ordered category list (mirrors `CATEGORIES`). The UI uses it to
-   * build the category filter; it is the full set of selectable categories,
-   * independent of which are currently included.
-   */
-  categories: Category[];
   /** One entry per month, in `months` order. */
   monthly: MonthStats[];
   /**
@@ -305,7 +299,6 @@ export function computeStats(
   return {
     windowStart,
     months,
-    categories: [...CATEGORIES],
     monthly,
     excludedCount,
     ttmThresholdSeconds: thresholdSeconds,

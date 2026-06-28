@@ -11,8 +11,7 @@
  *   GET /api/stats?repo=<id>[&ttmDays=<days>][&categories=<csv>]
  *     Resolve the repo by `repos.id` and return the aggregated trailing-12-month
  *     buckets from `computeStats` as JSON: one count / median / mean bucket per
- *     month plus the full category list (for the
- *     UI's category filter). Optional `categories` is a comma-separated subset of
+ *     month. Optional `categories` is a comma-separated subset of
  *     the known categories; when present, only those categories' PRs feed the
  *     metric (empty string → none). When absent, all categories are included.
  *       - missing / non-numeric `repo`      → 400
@@ -23,6 +22,10 @@
  *     A tiny supporting read endpoint (NOT a second stats endpoint): returns the
  *     tracked repos with their stored PR count so the UI's repo selector can be
  *     populated. Read-only.
+ *
+ *   GET /api/categories
+ *     The canonical category list (the static `CATEGORIES` constant) for the UI's
+ *     category filter. Independent of any repo or stats query. Read-only.
  *
  *   GET /<path>
  *     Serve one of a fixed set of embedded UI assets. `/` maps to `index.html`.
@@ -247,6 +250,8 @@ export function createFetchHandler(
         return handleStats(db, url, defaultThresholdSeconds);
       case "/api/repos":
         return json(listRepos(db));
+      case "/api/categories":
+        return json([...CATEGORIES]);
       default:
         return handleStatic(url.pathname);
     }

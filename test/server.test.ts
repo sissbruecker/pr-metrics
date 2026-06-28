@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { createFetchHandler } from "../src/server.ts";
 import { openDb } from "../src/db.ts";
+import { CATEGORIES } from "../src/categorize.ts";
 
 /** Seed a repo with a couple of merged PRs in the trailing-12-month window. */
 function seed(): { db: ReturnType<typeof openDb>; repoId: number } {
@@ -81,6 +82,18 @@ describe("GET /api/stats categories filter", () => {
       0,
     );
     expect(total).toBe(0);
+    db.close();
+  });
+});
+
+describe("GET /api/categories", () => {
+  test("returns the canonical category list", async () => {
+    const { db } = seed();
+    const handler = createFetchHandler(db);
+    const res = await handler(new Request("http://x/api/categories"));
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body).toEqual([...CATEGORIES]);
     db.close();
   });
 });
