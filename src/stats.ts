@@ -55,7 +55,7 @@ import type { Database } from "bun:sqlite";
 import { categorize, type Category } from "./categorize.ts";
 import { DEFAULT_OUTLIER_THRESHOLD_DAYS } from "./config.ts";
 import { filterRows } from "./filter.ts";
-import { measureTtfrSeconds, measureTtmSeconds } from "./measures.ts";
+import { measureTtaSeconds, measureTtfrSeconds, measureTtmSeconds } from "./measures.ts";
 
 /** Seconds in one day, for converting day-denominated thresholds. */
 export const SECONDS_PER_DAY = 86400;
@@ -76,6 +76,12 @@ export interface StatsRow {
    * `ready_for_review_at`; null (no review, or no start point) yields a null TTFR.
    */
   first_review_at: string | null;
+  /**
+   * ISO 8601 UTC text of the first approval's submission, or null when the PR has
+   * no approval. The time-to-approval is derived in memory from this and
+   * `ready_for_review_at`; null (no approval, or no start point) yields a null TTA.
+   */
+  first_approval_at: string | null;
   /** Raw PR title, used to derive the category. */
   title: string;
 }
@@ -108,6 +114,8 @@ export interface MonthStats {
   timeToMerge: MetricBucket;
   /** Time-to-first-review metric bucket for this month. */
   timeToFirstReview: MetricBucket;
+  /** Time-to-approval metric bucket for this month. */
+  timeToApproval: MetricBucket;
 }
 
 /** The full aggregated result a JSON endpoint / UI can consume directly. */
@@ -182,10 +190,10 @@ export function windowMonths(now: Date): string[] {
 
 /**
  * Pure aggregation. Buckets `rows` by month (`substr(merged_at, 1, 7)`) and
- * computes a shared `count` plus the per-metric `timeToMerge` and
- * `timeToFirstReview` buckets per month over the rows whose derived category is
- * included. Always emits all `months` in order (empty → count 0, null
- * median/mean, excludedCount 0).
+ * computes a shared `count` plus the per-metric `timeToMerge`,
+ * `timeToFirstReview`, and `timeToApproval` buckets per month over the rows whose
+ * derived category is included. Always emits all `months` in order (empty →
+ * count 0, null median/mean, excludedCount 0).
  *
  * `includedCategories` is the category filter: when provided, a row whose
  * derived category is not in the set is dropped before any other accounting — it
@@ -224,6 +232,8 @@ export function aggregate(
     ttmExcluded: number;
     ttfrs: number[];
     ttfrExcluded: number;
+    ttas: number[];
+    ttaExcluded: number;
   }
   const accByMonth = new Map<string, Acc>();
 
@@ -238,7 +248,15 @@ export function aggregate(
 
     let acc = accByMonth.get(month);
     if (!acc) {
-      acc = { count: 0, ttms: [], ttmExcluded: 0, ttfrs: [], ttfrExcluded: 0 };
+      acc = {
+        count: 0,
+        ttms: [],
+        ttmExcluded: 0,
+        ttfrs: [],
+        ttfrExcluded: 0,
+        ttas: [],
+        ttaExcluded: 0,
+      };
       accByMonth.set(month, acc);
     }
 
@@ -257,6 +275,10 @@ export function aggregate(
       row.ready_for_review_at === null
         ? null
         : measureTtfrSeconds(row.ready_for_review_at, row.first_review_at);
+    const ttaSeconds =
+      row.ready_for_review_at === null
+        ? null
+        : measureTtaSeconds(row.ready_for_review_at, row.first_approval_at);
 
     // Per-metric filtering: a too-large value is excluded from THAT metric's
     // median/mean (and tallied), but the row already counted above. A null
@@ -272,6 +294,11 @@ export function aggregate(
     } else if (ttfrSeconds !== null) {
       acc.ttfrs.push(ttfrSeconds);
     }
+    if (ttaSeconds !== null && ttaSeconds > thresholdSeconds) {
+      acc.ttaExcluded += 1;
+    } else if (ttaSeconds !== null) {
+      acc.ttas.push(ttaSeconds);
+    }
   }
 
   const monthly: MonthStats[] = months.map((month) => {
@@ -282,6 +309,7 @@ export function aggregate(
         count: 0,
         timeToMerge: { median: null, mean: null, excludedCount: 0 },
         timeToFirstReview: { median: null, mean: null, excludedCount: 0 },
+        timeToApproval: { median: null, mean: null, excludedCount: 0 },
       };
     }
     return {
@@ -296,6 +324,11 @@ export function aggregate(
         median: median(acc.ttfrs),
         mean: mean(acc.ttfrs),
         excludedCount: acc.ttfrExcluded,
+      },
+      timeToApproval: {
+        median: median(acc.ttas),
+        mean: mean(acc.ttas),
+        excludedCount: acc.ttaExcluded,
       },
     };
   });
@@ -313,7 +346,7 @@ export function fetchStatsRows(
   windowStart: string,
 ): StatsRow[] {
   const stmt = db.query<StatsRow, [number, string]>(
-    `SELECT merged_at, ready_for_review_at, first_review_at, title
+    `SELECT merged_at, ready_for_review_at, first_review_at, first_approval_at, title
        FROM pull_requests
       WHERE repo_id = ?
         AND merged_at >= ?

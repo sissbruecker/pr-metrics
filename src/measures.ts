@@ -9,10 +9,11 @@
  * (e.g. review-cycle count, PR size) belong here; anything that summarizes a
  * population of PRs belongs in `stats.ts`.
  *
- * Two measures live here today, both sharing the same `ready_for_review_at`
+ * Three measures live here today, all sharing the same `ready_for_review_at`
  * start point and the same weekend-exclusion logic:
  *   - time-to-merge (TTM): `ready_for_review_at` → `merged_at`.
  *   - time-to-first-review (TTFR): `ready_for_review_at` → `first_review_at`.
+ *   - time-to-approval (TTA): `ready_for_review_at` → `first_approval_at`.
  *
  * Each computes the elapsed time in whole seconds, EXCLUDING weekends
  * (Saturdays and Sundays, in UTC).
@@ -125,4 +126,28 @@ export function measureTtfrSeconds(
     return null;
   }
   return weekendExcludedSeconds(readyForReviewAt, firstReviewAt);
+}
+
+/**
+ * Compute whole-second time-to-approval (TTA) from `ready_for_review_at` to
+ * `firstApprovalAt`, EXCLUDING weekends (see module docs). Returns `null` when
+ * the PR has no approval (`firstApprovalAt` is null) or either timestamp is
+ * unparseable; otherwise a non-negative integer count of weekday seconds.
+ *
+ * An approval submitted before the PR became ready (an approval on a still-draft
+ * PR) gives an inverted interval, which `weekendExcludedSeconds` reports as 0.
+ */
+export function measureTtaSeconds(
+  readyForReviewAt: string,
+  firstApprovalAt: string | null,
+): number | null {
+  if (firstApprovalAt === null) {
+    return null;
+  }
+  const startMs = Date.parse(readyForReviewAt);
+  const approvalMs = Date.parse(firstApprovalAt);
+  if (Number.isNaN(startMs) || Number.isNaN(approvalMs)) {
+    return null;
+  }
+  return weekendExcludedSeconds(readyForReviewAt, firstApprovalAt);
 }

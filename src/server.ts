@@ -11,7 +11,7 @@
  *   GET /api/stats?repo=<id>[&thresholdDays=<days>][&categories=<csv>]
  *     Resolve the repo by `repos.id` and return the aggregated trailing-12-month
  *     stats from `computeStats` as JSON: per month a shared `count` plus a
- *     `timeToMerge` and a `timeToFirstReview` metric bucket
+ *     `timeToMerge`, `timeToFirstReview`, and `timeToApproval` metric bucket
  *     ({median, mean, excludedCount}). Optional `thresholdDays` is the outlier
  *     cap (in days) shared by every metric. Optional `categories` is a
  *     comma-separated subset of the known categories; when present, only those

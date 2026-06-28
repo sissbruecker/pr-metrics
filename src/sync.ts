@@ -178,6 +178,8 @@ export interface PrMetadata {
   was_ever_draft: 0 | 1;
   /** First review's `submittedAt`, or `null` when there are no reviews. */
   first_review_at: string | null;
+  /** First approval's `submittedAt`, or `null` when the PR was never approved. */
+  first_approval_at: string | null;
   /** Raw normalized transitions, in chronological order. */
   draft_events: DraftEvent[];
 }
@@ -291,10 +293,16 @@ export function extractPrMetadata(pr: PullRequestNode): PrMetadata {
   const firstReview = pr.reviews.nodes[0];
   const firstReviewAt = firstReview?.submittedAt ?? null;
 
+  // first_approval_at: the earliest approving review's submittedAt (the query
+  // selects only the earliest APPROVED review), null when never approved.
+  const firstApproval = pr.approvals.nodes[0];
+  const firstApprovalAt = firstApproval?.submittedAt ?? null;
+
   return {
     ready_for_review_at: readyForReviewAt,
     was_ever_draft: wasEverDraft,
     first_review_at: firstReviewAt,
+    first_approval_at: firstApprovalAt,
     draft_events: events,
   };
 }
@@ -307,14 +315,14 @@ const UPSERT_SQL = `
 INSERT INTO pull_requests (
   repo_id, number, title, body, author, url,
   created_at, merged_at, closed_at, updated_at,
-  first_review_at, ready_for_review_at, was_ever_draft,
+  first_review_at, first_approval_at, ready_for_review_at, was_ever_draft,
   base_branch, head_branch, additions, deletions, changed_files,
   commit_count, review_count, comment_count, milestone,
   labels, assignees, requested_reviewers, draft_events, synced_at
 ) VALUES (
   $repo_id, $number, $title, $body, $author, $url,
   $created_at, $merged_at, $closed_at, $updated_at,
-  $first_review_at, $ready_for_review_at, $was_ever_draft,
+  $first_review_at, $first_approval_at, $ready_for_review_at, $was_ever_draft,
   $base_branch, $head_branch, $additions, $deletions, $changed_files,
   $commit_count, $review_count, $comment_count, $milestone,
   $labels, $assignees, $requested_reviewers, $draft_events, $synced_at
@@ -329,6 +337,7 @@ ON CONFLICT(repo_id, number) DO UPDATE SET
   closed_at = excluded.closed_at,
   updated_at = excluded.updated_at,
   first_review_at = excluded.first_review_at,
+  first_approval_at = excluded.first_approval_at,
   ready_for_review_at = excluded.ready_for_review_at,
   was_ever_draft = excluded.was_ever_draft,
   base_branch = excluded.base_branch,
@@ -372,6 +381,7 @@ function toUpsertParams(
     $closed_at: node.closedAt,
     $updated_at: node.updatedAt,
     $first_review_at: meta.first_review_at,
+    $first_approval_at: meta.first_approval_at,
     $ready_for_review_at: meta.ready_for_review_at,
     $was_ever_draft: meta.was_ever_draft,
     $base_branch: node.baseRefName,

@@ -57,6 +57,8 @@ export interface PullRequestRow {
   updated_at: string;
   /** ISO timestamp of the first review, if any. */
   first_review_at: string | null;
+  /** ISO timestamp of the first approval, if any. */
+  first_approval_at: string | null;
   /** Computed start point for the time-to-merge measurement. */
   ready_for_review_at: string | null;
   /** `0`/`1` — whether the PR was ever in draft state. */
@@ -124,6 +126,7 @@ CREATE TABLE IF NOT EXISTS pull_requests (
   closed_at TEXT,
   updated_at TEXT NOT NULL,
   first_review_at TEXT,
+  first_approval_at TEXT,
   ready_for_review_at TEXT,
   was_ever_draft INTEGER NOT NULL DEFAULT 0,
   base_branch TEXT,

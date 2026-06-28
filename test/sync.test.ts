@@ -37,6 +37,7 @@ function prNode(over: Partial<PullRequestNode> = {}): PullRequestNode {
     milestone: null,
     commits: { totalCount: 1 },
     reviews: { totalCount: 0, nodes: [] },
+    approvals: { nodes: [] },
     comments: { totalCount: 0 },
     labels: { nodes: [] },
     assignees: { nodes: [] },
@@ -363,6 +364,20 @@ describe("first_review_at extraction", () => {
   test("first_review_at is null when there are no reviews", () => {
     const noReview = extractPrMetadata(prNode({ reviews: { totalCount: 0, nodes: [] } }));
     expect(noReview.first_review_at).toBeNull();
+  });
+});
+
+describe("first_approval_at extraction", () => {
+  test("first_approval_at comes from approvals.nodes[0].submittedAt", () => {
+    const withApproval = extractPrMetadata(
+      prNode({ approvals: { nodes: [{ submittedAt: "2026-03-03T09:00:00Z" }] } }),
+    );
+    expect(withApproval.first_approval_at).toBe("2026-03-03T09:00:00Z");
+  });
+
+  test("first_approval_at is null when the PR was never approved", () => {
+    const noApproval = extractPrMetadata(prNode({ approvals: { nodes: [] } }));
+    expect(noApproval.first_approval_at).toBeNull();
   });
 });
 

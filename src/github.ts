@@ -92,6 +92,7 @@ export interface PullRequestNode {
   milestone: { title: string } | null;
   commits: { totalCount: number };
   reviews: { totalCount: number; nodes: Array<{ submittedAt: string | null }> };
+  approvals: { nodes: Array<{ submittedAt: string | null }> };
   comments: { totalCount: number };
   labels: { nodes: Array<{ name: string }> };
   assignees: { nodes: Array<{ login: string }> };
@@ -249,6 +250,7 @@ const PR_FIELDS = `
     milestone { title }
     commits { totalCount }
     reviews(first: 1) { totalCount nodes { submittedAt } }
+    approvals: reviews(first: 1, states: APPROVED) { nodes { submittedAt } }
     comments { totalCount }
     labels(first: 20) { nodes { name } }
     assignees(first: 10) { nodes { login } }

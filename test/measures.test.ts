@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import {
+  measureTtaSeconds,
   measureTtfrSeconds,
   measureTtmSeconds,
   weekendExcludedSeconds,
@@ -39,6 +40,24 @@ describe("measureTtfrSeconds", () => {
 
   test("a review before the ready point (inverted interval) → 0", () => {
     expect(measureTtfrSeconds("2026-03-03T00:00:00Z", "2026-03-02T00:00:00Z")).toBe(0);
+  });
+});
+
+describe("measureTtaSeconds", () => {
+  test("null firstApprovalAt → null; unparseable → null; weekday diff exact", () => {
+    expect(measureTtaSeconds("2026-03-02T00:00:00Z", null)).toBeNull();
+    expect(measureTtaSeconds("nope", "2026-03-02T00:00:00Z")).toBeNull();
+    // 2026-03-02 is a Monday, so the 30s falls entirely on a weekday.
+    expect(measureTtaSeconds("2026-03-02T00:00:00Z", "2026-03-02T00:00:30Z")).toBe(30);
+  });
+
+  test("credits a weekend-spanning wait only with working time", () => {
+    // ready Friday 16:00 → first approval Monday 10:00 → Fri 8h + Mon 10h = 18h.
+    expect(measureTtaSeconds("2026-01-09T16:00:00Z", "2026-01-12T10:00:00Z")).toBe(18 * 3600);
+  });
+
+  test("an approval before the ready point (inverted interval) → 0", () => {
+    expect(measureTtaSeconds("2026-03-03T00:00:00Z", "2026-03-02T00:00:00Z")).toBe(0);
   });
 });
 

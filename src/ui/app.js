@@ -68,6 +68,15 @@ const METRICS = [
       "Time to first review is measured from when a PR is ready for review to its first review, <strong>excluding weekends</strong> (Saturdays and Sundays, UTC).",
     outlierNoun: "time-to-first-review",
   },
+  {
+    key: "timeToApproval",
+    slug: "time-to-approval",
+    title: "Time-to-Approval",
+    caption: "Time to approval · hours",
+    subtitle:
+      "Time to approval is measured from when a PR is ready for review to its first approval, <strong>excluding weekends</strong> (Saturdays and Sundays, UTC).",
+    outlierNoun: "time-to-approval",
+  },
 ];
 
 /** Look up a metric descriptor by its bucket key. */
