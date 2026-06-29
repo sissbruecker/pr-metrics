@@ -1,12 +1,18 @@
 # pr-stats
 
-Track the time-to-merge of GitHub pull requests across repositories. A local,
-single-user CLI that stores data in a SQLite file and doubles as a query-only
-web UI.
+Track review-throughput metrics for GitHub pull requests across repositories. A
+local, single-user CLI that stores data in a SQLite file and doubles as a
+query-only web UI.
 
-Time-to-merge is measured from when a PR is ready for review to when it merges,
-**excluding weekends** (Saturdays and Sundays, in UTC) so the metric reflects
-elapsed working time rather than wall clock.
+## Metrics
+
+Three per-PR metrics are tracked, all measured from the same start point — when
+the PR became ready for review — and all **excluding weekends** (Saturdays and
+Sundays, in UTC) so they reflect elapsed working time rather than wall clock:
+
+- **Time-to-merge** — ready for review → merged.
+- **Time-to-first-review** — ready for review → first review.
+- **Time-to-approval** — ready for review → first approval.
 
 ## Requirements
 
