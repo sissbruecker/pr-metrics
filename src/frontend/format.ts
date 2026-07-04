@@ -21,18 +21,14 @@
 /** Em dash used to render "no value" cells/labels. */
 export const BLANK = "—";
 
-/**
- * Format a duration in seconds as a short human-readable string.
- * @param {number | null} seconds
- * @returns {string}
- */
-export function formatDuration(seconds) {
+/** Format a duration in seconds as a short human-readable string. */
+export function formatDuration(seconds: number | null | undefined): string {
   if (seconds === null || seconds === undefined) return BLANK;
   // Treat 0 / falsy / negative as "0s".
   if (!seconds || seconds <= 0) return "0s";
 
   const total = Math.floor(seconds);
-  const units = [
+  const units: readonly [string, number][] = [
     ["d", 86400],
     ["h", 3600],
     ["m", 60],
@@ -40,7 +36,7 @@ export function formatDuration(seconds) {
   ];
 
   // Break the total into each unit's whole-number value.
-  const parts = [];
+  const parts: { label: string; value: number }[] = [];
   let remaining = total;
   for (const [label, size] of units) {
     const value = Math.floor(remaining / size);

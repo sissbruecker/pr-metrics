@@ -10,8 +10,8 @@
   },
   "scripts": {
     "start": "bun run src/index.ts",
-    "compile": "bun build --compile src/index.ts --outfile pr-stats",
-    "typecheck": "tsc --noEmit",
+    "dev": "bun run src/dev.ts",
+    "typecheck": "tsc --noEmit -p . && tsc --noEmit -p src/frontend",
     "test": "bun test"
   },
   "devDependencies": {

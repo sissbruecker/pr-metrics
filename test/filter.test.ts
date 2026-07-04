@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { filterRows, isExcluded, isVersionBump } from "../src/filter.ts";
+import { filterRows, isExcluded, isVersionBump } from "../src/frontend/filter.ts";
 
 describe("isVersionBump", () => {
   test("matches plain and scoped version-bump titles", () => {

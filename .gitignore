@@ -10,8 +10,11 @@ node_modules
 *.sqlite-wal
 .env
 
-# Compiled single-file executable (bun run compile)
-/pr-stats
+# Generated static site
 /dist
-# Transient build shard bun may leave behind on --compile
+# Dev-only data files for `bun src/frontend/index.html`
+/src/frontend/data
+
+# Stale artifacts of the removed `compile` script
+/pr-stats
 *.bun-build

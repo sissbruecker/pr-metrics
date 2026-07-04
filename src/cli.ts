@@ -4,7 +4,7 @@
  * The CLI is the only thing that writes data and the entry point for the UI.
  * Routing, usage/help, and unknown-command handling live here, alongside the
  * real handlers for each subcommand, which wire the already-built modules
- * (config, db, sync, github, server) together.
+ * (config, db, sync, github, generate, server) together.
  */
 
 import { parseArgs } from "node:util";
@@ -13,11 +13,12 @@ import { loadConfig, requireGithubToken, type Config } from "./config.ts";
 import { openDb, type RepoRow } from "./db.ts";
 import { GitHubClient } from "./github.ts";
 import { syncRepo } from "./sync.ts";
+import { generateSite } from "./generate.ts";
 import { createServer } from "./server.ts";
 
-type Subcommand = "add" | "remove" | "list" | "sync" | "serve";
+type Subcommand = "add" | "remove" | "list" | "sync" | "generate" | "serve";
 
-const SUBCOMMANDS: readonly Subcommand[] = ["add", "remove", "list", "sync", "serve"];
+const SUBCOMMANDS: readonly Subcommand[] = ["add", "remove", "list", "sync", "generate", "serve"];
 
 function isSubcommand(value: string): value is Subcommand {
   return (SUBCOMMANDS as readonly string[]).includes(value);
@@ -45,8 +46,14 @@ Commands:
       Run a manual sync for a repo. Requires a GitHub token. Refuses if a
       sync is already running for that repo.
 
-  serve [--port <n>] [--hostname <h>]
-      Launch the query-only web UI against the local DB. Default port 3000.
+  generate [--out <dir>] [--minify] [--data-only]
+      Generate the static site from the local DB: per-repo JSON data files
+      plus the bundled web UI. Default output directory "dist".
+      --data-only writes only the data files (skips the frontend build).
+
+  serve [--dir <dir>] [--port <n>] [--hostname <h>]
+      Serve a generated site as plain static files. Default directory
+      "dist", default port 3000. Run \`generate\` first.
 
 Options:
   -h, --help   Show this help
@@ -295,11 +302,42 @@ async function cmdSync(argv: string[], config: Config): Promise<number> {
   }
 }
 
-/** `serve [--port <n>] [--hostname <h>]` */
+/** `generate [--out <dir>] [--minify] [--data-only]` */
+async function cmdGenerate(argv: string[], config: Config): Promise<number> {
+  const { values } = parseArgs({
+    args: argv,
+    options: {
+      out: { type: "string" },
+      minify: { type: "boolean" },
+      "data-only": { type: "boolean" },
+    },
+    allowPositionals: false,
+    strict: true,
+  });
+
+  const outDir = values.out ?? "dist";
+  const db = openDb(config.dbPath);
+  const result = await generateSite({
+    db,
+    outDir,
+    minify: values.minify ?? false,
+    dataOnly: values["data-only"] ?? false,
+  });
+  const what = values["data-only"] ? "data files" : "static site";
+  console.log(
+    `Generated ${what} in ${outDir}/ (${result.repoCount} repo${
+      result.repoCount === 1 ? "" : "s"
+    }, ${result.prCount} merged pull request${result.prCount === 1 ? "" : "s"}).`,
+  );
+  return 0;
+}
+
+/** `serve [--dir <dir>] [--port <n>] [--hostname <h>]` */
 async function cmdServe(argv: string[], config: Config): Promise<number> {
   const { values } = parseArgs({
     args: argv,
     options: {
+      dir: { type: "string" },
       port: { type: "string" },
       hostname: { type: "string" },
     },
@@ -315,9 +353,15 @@ async function cmdServe(argv: string[], config: Config): Promise<number> {
     }
   }
 
-  const db = openDb(config.dbPath);
+  const dir = values.dir ?? "dist";
+  if (!(await Bun.file(`${dir}/index.html`).exists())) {
+    throw new CliError(
+      `No generated site found in ${dir}/ (missing index.html). Run \`pr-stats generate\` first.`,
+    );
+  }
+
   const server = createServer({
-    db,
+    dir,
     port,
     hostname: values.hostname,
   });
@@ -338,6 +382,7 @@ const HANDLERS: Record<Subcommand, Handler> = {
   remove: cmdRemove,
   list: cmdList,
   sync: cmdSync,
+  generate: cmdGenerate,
   serve: cmdServe,
 };
 

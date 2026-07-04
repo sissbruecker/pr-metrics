@@ -1,0 +1,15 @@
+{
+  // Frontend project: browser code needs the DOM libs, and none of the Bun
+  // globals. The backend project (../../tsconfig.json) excludes this
+  // directory; `typecheck` runs both. Bun itself ignores these — this exists
+  // purely for `tsc`.
+  "extends": "../../tsconfig.json",
+  "compilerOptions": {
+    "lib": ["ESNext", "DOM", "DOM.Iterable"],
+    "types": []
+  },
+  "include": ["./**/*"],
+  // The vendored Chart.js UMD bundle is typed by chart.umd.d.ts; don't make
+  // tsc parse 200 KB of minified JS. `data/` holds dev-only generated JSON.
+  "exclude": ["chart.umd.js", "data"]
+}

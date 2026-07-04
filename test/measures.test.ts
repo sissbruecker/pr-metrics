@@ -4,7 +4,7 @@ import {
   measureTtfrSeconds,
   measureTtmSeconds,
   weekendExcludedSeconds,
-} from "../src/measures.ts";
+} from "../src/frontend/measures.ts";
 
 describe("measureTtmSeconds", () => {
   test("null mergedAt → null; unparseable → null; weekday diff exact", () => {

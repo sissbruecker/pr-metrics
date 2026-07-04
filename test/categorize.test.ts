@@ -5,7 +5,7 @@ import {
   DEFAULT_RULES,
   UNCATEGORIZED,
   type CategoryRule,
-} from "../src/categorize.ts";
+} from "../src/frontend/categorize.ts";
 
 describe("categorize — default rules", () => {
   test("every default prefix maps to its expected category", () => {

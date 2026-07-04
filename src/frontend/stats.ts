@@ -1,29 +1,26 @@
 /**
  * Statistics & aggregation layer.
  *
- * The database does one cheap, filtered fetch of the columns we need; all
- * bucketing, categorizing, and math happens here in TypeScript. (Median is not
- * a SQLite primitive, and the category rules live in app code, so the
- * aggregation cannot be pushed into SQL.)
+ * Pure functions — no database access, no network. The frontend loads a repo's
+ * generated JSON rows once and all bucketing, categorizing, and math happens
+ * here, in the browser. (This module also backs the `generate`-side tests,
+ * which is why it never touches I/O.)
  *
  * Each metric is computed HERE, in memory, from a row's stored timestamps (via
- * the `measure*` functions in `src/measures.ts`) rather than read from a
+ * the `measure*` functions in `./measures.ts`) rather than read from a
  * precomputed column: time-to-merge from `ready_for_review_at` + `merged_at`,
- * time-to-first-review from `ready_for_review_at` + `first_review_at`. The DB
- * stores only the raw inputs, so changing a metric's definition (or adding a new
- * one) takes effect on the next read with no database recompute or re-sync.
+ * time-to-first-review from `ready_for_review_at` + `first_review_at`. The data
+ * files carry only the raw inputs, so changing a metric's definition (or adding
+ * a new one) takes effect on the next regeneration/reload with no database
+ * recompute or re-sync.
  *
  * The flow is:
  *   1. Compute the trailing-12-month window start from `now`.
- *   2. Run ONE parameterized query for the rows merged within that window.
+ *   2. Drop the excluded rows (version bumps — see `./filter.ts`).
  *   3. Derive each row's metrics, then bucket by month (`YYYY-MM`), computing a
  *      shared `count` plus per-metric median / mean per month over the rows
  *      whose derived category is currently included (the UI's category filter;
  *      all categories by default).
- *
- * The aggregation is kept pure (it takes rows in, not a database) so it can be
- * tested without SQLite. The thin `fetchStatsRows` reader runs the query, and
- * `computeStats` ties window + fetch + aggregation together for an endpoint.
  *
  * Metric-ready shape: each month carries a shared `count` (the denominator) and
  * one named metric bucket per metric (`timeToMerge` and `timeToFirstReview`
@@ -51,40 +48,23 @@
  *   stable. Selecting no categories yields all-empty months.
  */
 
-import type { Database } from "bun:sqlite";
 import { categorize, type Category } from "./categorize.ts";
-import { DEFAULT_OUTLIER_THRESHOLD_DAYS } from "./config.ts";
 import { filterRows } from "./filter.ts";
 import { measureTtaSeconds, measureTtfrSeconds, measureTtmSeconds } from "./measures.ts";
+import type { StatsRow } from "./types.ts";
+
+export type { StatsRow };
 
 /** Seconds in one day, for converting day-denominated thresholds. */
 export const SECONDS_PER_DAY = 86400;
 
-/** The subset of PR columns the aggregation needs. */
-export interface StatsRow {
-  /** ISO 8601 UTC text, e.g. `2026-06-15T09:00:00Z`. */
-  merged_at: string;
-  /**
-   * TTM measurement start point (ISO 8601 UTC text). The time-to-merge is
-   * derived in memory from this and `merged_at`; null only in defensive cases
-   * (a merged PR always has one in practice), which yields a null TTM.
-   */
-  ready_for_review_at: string | null;
-  /**
-   * ISO 8601 UTC text of the first review's submission, or null when the PR has
-   * no review. The time-to-first-review is derived in memory from this and
-   * `ready_for_review_at`; null (no review, or no start point) yields a null TTFR.
-   */
-  first_review_at: string | null;
-  /**
-   * ISO 8601 UTC text of the first approval's submission, or null when the PR has
-   * no approval. The time-to-approval is derived in memory from this and
-   * `ready_for_review_at`; null (no approval, or no start point) yields a null TTA.
-   */
-  first_approval_at: string | null;
-  /** Raw PR title, used to derive the category. */
-  title: string;
-}
+/**
+ * Default outlier threshold, in days, applied to every metric's median/mean. A
+ * PR whose derived measure (time-to-merge, time-to-first-review, …) exceeds this
+ * is dropped from that metric's median/mean. The UI seeds its threshold input
+ * with this and recomputes locally when the user overrides it.
+ */
+export const DEFAULT_OUTLIER_THRESHOLD_DAYS = 7;
 
 /**
  * One metric's stats for a single month. Median/mean are over the in-cap,
@@ -118,7 +98,7 @@ export interface MonthStats {
   timeToApproval: MetricBucket;
 }
 
-/** The full aggregated result a JSON endpoint / UI can consume directly. */
+/** The full aggregated result the UI renders directly. */
 export interface StatsResult {
   /** ISO UTC text for the first day of the trailing-12-month window. */
   windowStart: string;
@@ -211,8 +191,8 @@ export function windowMonths(now: Date): string[] {
  * and simply doesn't feed median/mean. `thresholdSeconds` defaults to `Infinity`
  * (no filtering).
  *
- * Rows whose month falls outside `months` are ignored (defensive — the query
- * already filters by the window start).
+ * Rows whose month falls outside `months` are ignored — with the full merged
+ * history in hand this is what applies the trailing-12-month window.
  */
 export function aggregate(
   rows: StatsRow[],
@@ -337,45 +317,25 @@ export function aggregate(
 }
 
 /**
- * Run EXACTLY the single stats query, parameterized, and return the rows.
- * Kept separate from `aggregate` so the aggregation can be tested without a DB.
- */
-export function fetchStatsRows(
-  db: Database,
-  repoId: number,
-  windowStart: string,
-): StatsRow[] {
-  const stmt = db.query<StatsRow, [number, string]>(
-    `SELECT merged_at, ready_for_review_at, first_review_at, first_approval_at, title
-       FROM pull_requests
-      WHERE repo_id = ?
-        AND merged_at >= ?
-      ORDER BY merged_at`,
-  );
-  return stmt.all(repoId, windowStart);
-}
-
-/**
- * Top-level entry point: compute the window, fetch the rows, and aggregate.
- * `now` is injected for deterministic windows in tests; defaults to the current
- * time. `thresholdSeconds` is the shared outlier cap (a PR above it drops from
- * the metric's median/mean but still counts); it defaults to the 7-day default
- * and is overridden per request by the server.
- * `includedCategories` is the category filter (see `aggregate`); `undefined`
- * includes every category.
+ * Top-level entry point: compute the window, apply the exclusion filter, and
+ * aggregate the given rows. `rows` is a repo's full merged-PR history (the
+ * generated data file); rows outside the trailing-12-month window are dropped
+ * by the aggregation. `now` is injected for deterministic windows in tests;
+ * defaults to the current time. `thresholdSeconds` is the shared outlier cap (a
+ * PR above it drops from the metric's median/mean but still counts); it
+ * defaults to the 7-day default. `includedCategories` is the category filter
+ * (see `aggregate`); `undefined` includes every category.
  */
 export function computeStats(
-  db: Database,
-  repoId: number,
+  rows: StatsRow[],
   now: Date = new Date(),
   thresholdSeconds: number = DEFAULT_OUTLIER_THRESHOLD_DAYS * SECONDS_PER_DAY,
   includedCategories?: Set<Category>,
 ): StatsResult {
   const windowStart = computeWindowStart(now);
   const months = windowMonths(now);
-  const rows = filterRows(fetchStatsRows(db, repoId, windowStart));
   const { monthly } = aggregate(
-    rows,
+    filterRows(rows),
     months,
     thresholdSeconds,
     includedCategories,

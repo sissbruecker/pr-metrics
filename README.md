@@ -1,8 +1,8 @@
 # pr-stats
 
 Track review-throughput metrics for GitHub pull requests across repositories. A
-local, single-user CLI that stores data in a SQLite file and doubles as a
-query-only web UI.
+local, single-user CLI that stores data in a SQLite file and generates a static
+web UI from it.
 
 ## Metrics
 
@@ -67,9 +67,13 @@ GITHUB_TOKEN=ghp_xxx bun run src/index.ts sync vaadin/flow
 # Remove a tracked repo and its stored PRs / sync history
 bun run src/index.ts remove vaadin/flow
 
-# Launch the query-only web UI (default port 3000)
+# Generate the static site (data files + bundled UI) into dist/
+bun run src/index.ts generate
+bun run src/index.ts generate --out site --minify
+
+# Serve a generated site locally (default directory dist/, port 3000)
 bun run src/index.ts serve
-bun run src/index.ts serve --port 8080 --hostname 127.0.0.1
+bun run src/index.ts serve --dir site --port 8080 --hostname 127.0.0.1
 ```
 
 Use a specific database file by setting `PR_STATS_DB`:
@@ -78,22 +82,35 @@ Use a specific database file by setting `PR_STATS_DB`:
 PR_STATS_DB=./my-stats.sqlite bun run src/index.ts list
 ```
 
-## Build a single executable
+## The static site
 
-Compile a self-contained binary (the UI assets are embedded into it, so no
-source files are needed at runtime):
+`generate` writes a fully self-contained site:
 
-```sh
-bun run compile      # produces ./pr-stats
+```
+dist/
+  index.html, hashed .js/.css bundles
+  data/repos.json              # repo index + generation timestamp
+  data/<owner>-<repo>.json     # one repo's merged PRs (five fields per PR)
 ```
 
-Then run it like any binary — every command works, including `serve`:
+All URLs are relative, so the output works from any static host (GitHub
+Pages, an S3 prefix, …) — `serve` is just a convenience for viewing it
+locally, since the app fetches its JSON over HTTP. All filtering and
+aggregation (trailing-12-month window, categories, outlier threshold) runs in
+the browser, so the site only goes stale as the data ages; the generation
+timestamp is shown at the bottom of the page.
+
+## Frontend development
+
+The dev server (`src/dev.ts`) runs the UI with hot reload straight from the
+source entrypoint, serving the generated data files alongside it. Write the
+data files next to the entrypoint first:
 
 ```sh
-./pr-stats --help
-./pr-stats add vaadin/flow
-./pr-stats list
-PR_STATS_DB=./my-stats.sqlite ./pr-stats serve --port 8080
+bun run src/index.ts generate --data-only --out src/frontend
+bun run dev
 ```
 
-The compiled `pr-stats` binary is a build artifact and is gitignored.
+`src/frontend/data/` is a dev-only artifact and is gitignored. (Bare
+`bun src/frontend/index.html` doesn't work here: it answers every route with
+the HTML entrypoint, including the `/data/*.json` fetches.)

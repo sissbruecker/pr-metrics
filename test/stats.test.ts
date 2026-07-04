@@ -3,14 +3,12 @@ import {
   aggregate,
   computeStats,
   computeWindowStart,
-  fetchStatsRows,
   mean,
   median,
   windowMonths,
   type StatsRow,
-} from "../src/stats.ts";
-import { measureTtmSeconds } from "../src/measures.ts";
-import { openDb } from "../src/db.ts";
+} from "../src/frontend/stats.ts";
+import { measureTtmSeconds } from "../src/frontend/measures.ts";
 
 const MS_DAY = 86_400_000;
 
@@ -338,76 +336,62 @@ describe("aggregate", () => {
   });
 });
 
-describe("fetchStatsRows + computeStats (in-memory DB)", () => {
-  function seedRepo(db: ReturnType<typeof openDb>): number {
-    const r = db
-      .query<{ id: number }, []>(
-        `INSERT INTO repos (name, owner, repo, url, backfill_start, created_at)
-         VALUES ('n', 'o', 'r', 'u', '2020-01-01', '2020-01-01T00:00:00Z') RETURNING id`,
-      )
-      .get();
-    return r!.id;
-  }
-
+describe("computeStats (pure, rows in)", () => {
   /**
-   * Insert a PR, deriving `ready_for_review_at` from a target TTM and, when
+   * Build a StatsRow, deriving `ready_for_review_at` from a target TTM and, when
    * `ttfr`/`tta` is given, `first_review_at`/`first_approval_at` from that ready
    * point.
    */
-  function insertPr(
-    db: ReturnType<typeof openDb>,
-    number: number,
-    repoId: number,
+  function row(
     merged_at: string,
     ttm: number | null,
     title: string,
     ttfr: number | null = null,
     tta: number | null = null,
-  ): void {
+  ): StatsRow {
     const ready = ttm === null ? null : readyBefore(merged_at, ttm);
-    const firstReview = ttfr === null || ready === null ? null : reviewAfter(ready, ttfr);
-    const firstApproval = tta === null || ready === null ? null : reviewAfter(ready, tta);
-    db.query(
-      `INSERT INTO pull_requests
-        (repo_id, number, title, url, created_at, merged_at, updated_at,
-         ready_for_review_at, first_review_at, first_approval_at, synced_at)
-       VALUES (?, ?, ?, 'u', '2026-01-01T00:00:00Z', ?, '2026-01-01T00:00:00Z', ?, ?, ?, '2026-01-01T00:00:00Z')`,
-    ).run(repoId, number, title, merged_at, ready, firstReview, firstApproval);
+    return {
+      merged_at,
+      ready_for_review_at: ready,
+      first_review_at: ttfr === null || ready === null ? null : reviewAfter(ready, ttfr),
+      first_approval_at: tta === null || ready === null ? null : reviewAfter(ready, tta),
+      title,
+    };
   }
 
-  test("fetchStatsRows filters by repo and windowStart", () => {
-    const db = openDb(":memory:");
-    const repoId = seedRepo(db);
-    insertPr(db, 1, repoId, "2026-06-15T00:00:00Z", 100, "fix: in window");
-    insertPr(db, 2, repoId, "2020-01-01T00:00:00Z", 100, "fix: out of window");
-    const rows = fetchStatsRows(db, repoId, "2025-07-01T00:00:00Z");
-    expect(rows).toHaveLength(1);
-    expect(rows[0]!.title).toBe("fix: in window");
-    db.close();
-  });
-
-  test("computeStats ties window + fetch + aggregation together", () => {
-    const db = openDb(":memory:");
-    const repoId = seedRepo(db);
-    insertPr(db, 1, repoId, "2026-06-10T00:00:00Z", 200, "feat: a");
-    insertPr(db, 2, repoId, "2026-06-12T00:00:00Z", 400, "feat: b");
-    const result = computeStats(db, repoId, new Date("2026-06-26T00:00:00Z"));
+  test("ties window + aggregation together; out-of-window rows drop", () => {
+    const rows = [
+      row("2026-06-10T00:00:00Z", 200, "feat: a"),
+      row("2026-06-12T00:00:00Z", 400, "feat: b"),
+      row("2020-01-01T00:00:00Z", 100, "feat: out of window"),
+    ];
+    const result = computeStats(rows, new Date("2026-06-26T00:00:00Z"));
     expect(result.windowStart).toBe("2025-07-01T00:00:00Z");
     expect(result.months).toHaveLength(12);
     const june = result.monthly.find((m) => m.month === "2026-06")!;
     expect(june.count).toBe(2);
     expect(june.timeToMerge.median).toBe(300);
-    db.close();
+    expect(result.monthly.reduce((s, m) => s + m.count, 0)).toBe(2);
   });
 
-  test("computeStats applies an includedCategories filter", () => {
-    const db = openDb(":memory:");
-    const repoId = seedRepo(db);
-    insertPr(db, 1, repoId, "2026-06-10T00:00:00Z", 200, "feat: a");
-    insertPr(db, 2, repoId, "2026-06-11T00:00:00Z", 400, "fix: b");
+  test("applies the version-bump exclusion filter", () => {
+    const rows = [
+      row("2026-06-10T00:00:00Z", 200, "feat: a"),
+      row("2026-06-12T00:00:00Z", 400, "chore(deps): bump lib from 1 to 2"),
+    ];
+    const result = computeStats(rows, new Date("2026-06-26T00:00:00Z"));
+    const june = result.monthly.find((m) => m.month === "2026-06")!;
+    expect(june.count).toBe(1); // the bump PR is excluded entirely
+    expect(june.timeToMerge.median).toBe(200);
+  });
+
+  test("applies an includedCategories filter", () => {
+    const rows = [
+      row("2026-06-10T00:00:00Z", 200, "feat: a"),
+      row("2026-06-11T00:00:00Z", 400, "fix: b"),
+    ];
     const result = computeStats(
-      db,
-      repoId,
+      rows,
       new Date("2026-06-26T00:00:00Z"),
       undefined,
       new Set(["Fix"]),
@@ -415,61 +399,56 @@ describe("fetchStatsRows + computeStats (in-memory DB)", () => {
     const june = result.monthly.find((m) => m.month === "2026-06")!;
     expect(june.count).toBe(1); // only the Fix PR
     expect(june.timeToMerge.median).toBe(400);
-    db.close();
   });
 
-  test("computeStats applies the default 7-day threshold; outliers count but drop from the metric", () => {
-    const db = openDb(":memory:");
-    const repoId = seedRepo(db);
-    insertPr(db, 1, repoId, "2026-06-10T00:00:00Z", 3600, "feat: normal");
-    insertPr(db, 2, repoId, "2026-06-12T00:00:00Z", 30 * 86400, "feat: outlier");
-    const result = computeStats(db, repoId, new Date("2026-06-26T00:00:00Z"));
+  test("applies the default 7-day threshold; outliers count but drop from the metric", () => {
+    const rows = [
+      row("2026-06-10T00:00:00Z", 3600, "feat: normal"),
+      row("2026-06-12T00:00:00Z", 30 * 86400, "feat: outlier"),
+    ];
+    const result = computeStats(rows, new Date("2026-06-26T00:00:00Z"));
     const june = result.monthly.find((m) => m.month === "2026-06")!;
     expect(june.count).toBe(2); // outlier still counted in the denominator
     expect(june.timeToMerge.excludedCount).toBe(1);
     expect(june.timeToMerge.median).toBe(3600); // over the single in-cap row
-    db.close();
   });
 
-  test("computeStats derives timeToFirstReview from the stored first_review_at", () => {
-    const db = openDb(":memory:");
-    const repoId = seedRepo(db);
-    insertPr(db, 1, repoId, "2026-06-10T00:00:00Z", 200, "feat: a", 100);
-    insertPr(db, 2, repoId, "2026-06-12T00:00:00Z", 400, "feat: b", 300);
-    insertPr(db, 3, repoId, "2026-06-14T00:00:00Z", 600, "feat: c", null); // no review
-    const result = computeStats(db, repoId, new Date("2026-06-26T00:00:00Z"));
+  test("derives timeToFirstReview from first_review_at", () => {
+    const rows = [
+      row("2026-06-10T00:00:00Z", 200, "feat: a", 100),
+      row("2026-06-12T00:00:00Z", 400, "feat: b", 300),
+      row("2026-06-14T00:00:00Z", 600, "feat: c", null), // no review
+    ];
+    const result = computeStats(rows, new Date("2026-06-26T00:00:00Z"));
     const june = result.monthly.find((m) => m.month === "2026-06")!;
     expect(june.count).toBe(3); // all three counted
     // Only the two reviewed PRs feed TTFR: median(100, 300) = 200.
     expect(june.timeToFirstReview.median).toBe(200);
     expect(june.timeToFirstReview.excludedCount).toBe(0);
-    db.close();
   });
 
-  test("computeStats derives timeToApproval from the stored first_approval_at", () => {
-    const db = openDb(":memory:");
-    const repoId = seedRepo(db);
-    insertPr(db, 1, repoId, "2026-06-10T00:00:00Z", 200, "feat: a", 100, 150);
-    insertPr(db, 2, repoId, "2026-06-12T00:00:00Z", 400, "feat: b", 300, 350);
-    insertPr(db, 3, repoId, "2026-06-14T00:00:00Z", 600, "feat: c", 500, null); // no approval
-    const result = computeStats(db, repoId, new Date("2026-06-26T00:00:00Z"));
+  test("derives timeToApproval from first_approval_at", () => {
+    const rows = [
+      row("2026-06-10T00:00:00Z", 200, "feat: a", 100, 150),
+      row("2026-06-12T00:00:00Z", 400, "feat: b", 300, 350),
+      row("2026-06-14T00:00:00Z", 600, "feat: c", 500, null), // no approval
+    ];
+    const result = computeStats(rows, new Date("2026-06-26T00:00:00Z"));
     const june = result.monthly.find((m) => m.month === "2026-06")!;
     expect(june.count).toBe(3); // all three counted
     // Only the two approved PRs feed TTA: median(150, 350) = 250.
     expect(june.timeToApproval.median).toBe(250);
     expect(june.timeToApproval.excludedCount).toBe(0);
-    db.close();
   });
 
-  test("computeStats honors an explicit threshold argument", () => {
-    const db = openDb(":memory:");
-    const repoId = seedRepo(db);
-    insertPr(db, 1, repoId, "2026-06-10T00:00:00Z", 3600, "feat: normal");
-    insertPr(db, 2, repoId, "2026-06-12T00:00:00Z", 30 * 86400, "feat: outlier");
-    const result = computeStats(db, repoId, new Date("2026-06-26T00:00:00Z"), 60 * 86400);
+  test("honors an explicit threshold argument", () => {
+    const rows = [
+      row("2026-06-10T00:00:00Z", 3600, "feat: normal"),
+      row("2026-06-12T00:00:00Z", 30 * 86400, "feat: outlier"),
+    ];
+    const result = computeStats(rows, new Date("2026-06-26T00:00:00Z"), 60 * 86400);
     const june = result.monthly.find((m) => m.month === "2026-06")!;
     expect(june.count).toBe(2);
     expect(june.timeToMerge.excludedCount).toBe(0);
-    db.close();
   });
 });

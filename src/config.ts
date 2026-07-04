@@ -8,14 +8,6 @@
 /** Default location of the SQLite database file, relative to the cwd. */
 export const DEFAULT_DB_PATH = "pr-stats.sqlite";
 
-/**
- * Default outlier threshold, in days, applied to every metric's median/mean. A
- * PR whose derived measure (time-to-merge, time-to-first-review, …) exceeds this
- * is dropped from that metric's median/mean. The UI can override it per request;
- * this is the fallback applied when a request omits the threshold.
- */
-export const DEFAULT_OUTLIER_THRESHOLD_DAYS = 7;
-
 export interface Config {
   /** GitHub API token (classic with `repo` scope, or fine-grained read). */
   githubToken: string | undefined;

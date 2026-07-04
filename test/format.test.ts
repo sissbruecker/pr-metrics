@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { formatDuration, BLANK } from "../src/ui/format.js";
+import { formatDuration, BLANK } from "../src/frontend/format.ts";
 
 describe("formatDuration", () => {
   test("two most-significant non-zero units: 2d 4h (187200)", () => {

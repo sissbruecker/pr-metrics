@@ -28,5 +28,8 @@
 
     "types": ["bun"]
   },
-  "include": ["src/**/*", "test/**/*"]
+  "include": ["src/**/*", "test/**/*"],
+  // The frontend is its own project (src/frontend/tsconfig.json) with DOM
+  // libs; its pure modules are still checked here transitively via the tests.
+  "exclude": ["src/frontend"]
 }
