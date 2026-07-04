@@ -184,7 +184,8 @@ describe("aggregate", () => {
     const { monthly } = aggregate(rows, months, Infinity, new Set());
     for (const m of monthly) {
       expect(m.count).toBe(0);
-      expect(m.timeToMerge).toEqual({ median: null, mean: null, excludedCount: 0 });
+      expect(m.excludedCount).toBe(0);
+      expect(m.timeToMerge).toEqual({ median: null, mean: null });
     }
   });
 
@@ -196,7 +197,7 @@ describe("aggregate", () => {
     const { monthly } = aggregate(rows, months, 100, new Set(["Fix"]));
     const june = monthly.find((m) => m.month === "2026-06")!;
     expect(june.count).toBe(1); // only the Fix row
-    expect(june.timeToMerge.excludedCount).toBe(0); // the Chore outlier was filtered out before the outlier check
+    expect(june.excludedCount).toBe(0); // the Chore outlier was filtered out before the outlier check
   });
 
   test("empty month → count 0, null median/mean", () => {
@@ -204,7 +205,8 @@ describe("aggregate", () => {
     const { monthly } = aggregate(rows, months);
     const may = monthly.find((m) => m.month === "2026-05")!;
     expect(may.count).toBe(0);
-    expect(may.timeToMerge).toEqual({ median: null, mean: null, excludedCount: 0 });
+    expect(may.excludedCount).toBe(0);
+    expect(may.timeToMerge).toEqual({ median: null, mean: null });
   });
 
   test("every month present and ordered", () => {
@@ -232,30 +234,30 @@ describe("aggregate", () => {
     }
   });
 
-  test("rows above the threshold drop from the metric but still count; a row at the threshold feeds it", () => {
+  test("rows above the threshold drop from the metrics but still count; a row at the threshold feeds them", () => {
     const rows: StatsRow[] = [
       row({ ttm: 10, title: "fix: a" }),
-      row({ ttm: 100, title: "fix: b" }), // exactly at threshold → feeds the metric
-      row({ ttm: 101, title: "fix: c" }), // over → excluded from median/mean, still counts
+      row({ ttm: 100, title: "fix: b" }), // exactly at threshold → feeds the metrics
+      row({ ttm: 101, title: "fix: c" }), // over → excluded, still counts
     ];
     const { monthly } = aggregate(rows, months, 100);
     const june = monthly.find((m) => m.month === "2026-06")!;
     expect(june.count).toBe(3); // outlier still counted in the denominator
-    expect(june.timeToMerge.median).toBe(55); // median(10, 100), over the 2 in-cap rows
+    expect(june.excludedCount).toBe(1);
+    expect(june.timeToMerge.median).toBe(55); // median(10, 100), over the 2 surviving rows
     expect(june.timeToMerge.mean).toBe(55);
-    expect(june.timeToMerge.excludedCount).toBe(1);
   });
 
   test("null TTM is never excluded by the threshold; the outlier still counts", () => {
     const rows: StatsRow[] = [
       row({ ttm: null, title: "fix: a" }),
-      row({ ttm: 1000, title: "fix: b" }), // over threshold → excluded from median/mean
+      row({ ttm: 1000, title: "fix: b" }), // over threshold → excluded
     ];
     const { monthly } = aggregate(rows, months, 100);
     const june = monthly.find((m) => m.month === "2026-06")!;
     expect(june.count).toBe(2); // null + outlier both counted
-    expect(june.timeToMerge.excludedCount).toBe(1); // only the outlier
-    expect(june.timeToMerge.median).toBeNull(); // null didn't feed; outlier was capped
+    expect(june.excludedCount).toBe(1); // only the outlier
+    expect(june.timeToMerge.median).toBeNull(); // null didn't feed; outlier was dropped
     expect(june.timeToMerge.mean).toBeNull();
   });
 
@@ -271,27 +273,24 @@ describe("aggregate", () => {
     expect(june.count).toBe(3);
     expect(june.timeToFirstReview.median).toBe(30);
     expect(june.timeToFirstReview.mean).toBe(30);
-    expect(june.timeToFirstReview.excludedCount).toBe(0);
+    expect(june.excludedCount).toBe(0);
   });
 
-  test("the shared cap drops outliers from BOTH metrics independently", () => {
+  test("a TTM outlier is excluded from EVERY metric, even measures under the cap", () => {
     const rows: StatsRow[] = [
-      // In cap for both.
-      row({ ttm: 10, ttfr: 10, title: "fix: a" }),
-      // TTM over the cap, TTFR within: excluded from TTM only.
-      row({ ttm: 1000, ttfr: 20, title: "fix: b" }),
-      // TTM within, TTFR over the cap: excluded from TTFR only.
-      row({ ttm: 30, ttfr: 1000, title: "fix: c" }),
+      // Survives the gate: feeds every metric.
+      row({ ttm: 10, ttfr: 4, tta: 6, title: "fix: a" }),
+      // TTM over the cap: an outlier PR — its in-cap TTFR/TTA feed nothing.
+      row({ ttm: 1000, ttfr: 20, tta: 30, title: "fix: b" }),
     ];
     const { monthly } = aggregate(rows, months, 100);
     const june = monthly.find((m) => m.month === "2026-06")!;
-    expect(june.count).toBe(3); // every row counts
-    // TTM: 10 and 30 feed (1000 excluded) → median 20.
-    expect(june.timeToMerge.median).toBe(20);
-    expect(june.timeToMerge.excludedCount).toBe(1);
-    // TTFR: 10 and 20 feed (1000 excluded) → median 15.
-    expect(june.timeToFirstReview.median).toBe(15);
-    expect(june.timeToFirstReview.excludedCount).toBe(1);
+    expect(june.count).toBe(2); // the outlier still counts in the denominator
+    expect(june.excludedCount).toBe(1);
+    // Only the surviving row feeds any metric.
+    expect(june.timeToMerge.median).toBe(10);
+    expect(june.timeToFirstReview.median).toBe(4);
+    expect(june.timeToApproval.median).toBe(6);
   });
 
   test("a row with no first review counts but does not feed TTFR", () => {
@@ -304,7 +303,7 @@ describe("aggregate", () => {
     expect(june.count).toBe(2); // both count
     expect(june.timeToFirstReview.median).toBe(40); // only the reviewed row feeds
     expect(june.timeToFirstReview.mean).toBe(40);
-    expect(june.timeToFirstReview.excludedCount).toBe(0); // null is never an outlier
+    expect(june.excludedCount).toBe(0); // a missing review is never an outlier
   });
 
   test("emits a timeToApproval bucket over the approved rows", () => {
@@ -319,20 +318,19 @@ describe("aggregate", () => {
     expect(june.count).toBe(3);
     expect(june.timeToApproval.median).toBe(30);
     expect(june.timeToApproval.mean).toBe(30);
-    expect(june.timeToApproval.excludedCount).toBe(0);
+    expect(june.excludedCount).toBe(0);
   });
 
-  test("the shared cap drops TTA outliers; null approvals never feed", () => {
+  test("a row with no approval counts but does not feed TTA", () => {
     const rows: StatsRow[] = [
       row({ ttm: 10, tta: 10, title: "fix: a" }),
-      row({ ttm: 10, tta: 1000, title: "fix: b" }), // approval over cap → excluded from TTA
-      row({ ttm: 10, tta: null, title: "fix: c" }), // no approval → never feeds, never an outlier
+      row({ ttm: 10, tta: null, title: "fix: b" }), // no approval → never feeds, never an outlier
     ];
     const { monthly } = aggregate(rows, months, 100);
     const june = monthly.find((m) => m.month === "2026-06")!;
-    expect(june.count).toBe(3); // every row counts
-    expect(june.timeToApproval.median).toBe(10); // only the in-cap approval feeds
-    expect(june.timeToApproval.excludedCount).toBe(1); // only the outlier
+    expect(june.count).toBe(2); // both count
+    expect(june.excludedCount).toBe(0);
+    expect(june.timeToApproval.median).toBe(10); // only the approved row feeds
   });
 });
 
@@ -401,7 +399,7 @@ describe("computeStats (pure, rows in)", () => {
     expect(june.timeToMerge.median).toBe(400);
   });
 
-  test("applies the default 7-day threshold; outliers count but drop from the metric", () => {
+  test("applies the default 7-day threshold; outliers count but drop from the metrics", () => {
     const rows = [
       row("2026-06-10T00:00:00Z", 3600, "feat: normal"),
       row("2026-06-12T00:00:00Z", 30 * 86400, "feat: outlier"),
@@ -409,8 +407,8 @@ describe("computeStats (pure, rows in)", () => {
     const result = computeStats(rows, new Date("2026-06-26T00:00:00Z"));
     const june = result.monthly.find((m) => m.month === "2026-06")!;
     expect(june.count).toBe(2); // outlier still counted in the denominator
-    expect(june.timeToMerge.excludedCount).toBe(1);
-    expect(june.timeToMerge.median).toBe(3600); // over the single in-cap row
+    expect(june.excludedCount).toBe(1);
+    expect(june.timeToMerge.median).toBe(3600); // over the single surviving row
   });
 
   test("derives timeToFirstReview from first_review_at", () => {
@@ -424,7 +422,7 @@ describe("computeStats (pure, rows in)", () => {
     expect(june.count).toBe(3); // all three counted
     // Only the two reviewed PRs feed TTFR: median(100, 300) = 200.
     expect(june.timeToFirstReview.median).toBe(200);
-    expect(june.timeToFirstReview.excludedCount).toBe(0);
+    expect(june.excludedCount).toBe(0);
   });
 
   test("derives timeToApproval from first_approval_at", () => {
@@ -438,7 +436,7 @@ describe("computeStats (pure, rows in)", () => {
     expect(june.count).toBe(3); // all three counted
     // Only the two approved PRs feed TTA: median(150, 350) = 250.
     expect(june.timeToApproval.median).toBe(250);
-    expect(june.timeToApproval.excludedCount).toBe(0);
+    expect(june.excludedCount).toBe(0);
   });
 
   test("honors an explicit threshold argument", () => {
@@ -449,6 +447,6 @@ describe("computeStats (pure, rows in)", () => {
     const result = computeStats(rows, new Date("2026-06-26T00:00:00Z"), 60 * 86400);
     const june = result.monthly.find((m) => m.month === "2026-06")!;
     expect(june.count).toBe(2);
-    expect(june.timeToMerge.excludedCount).toBe(0);
+    expect(june.excludedCount).toBe(0);
   });
 });

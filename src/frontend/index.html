@@ -19,14 +19,16 @@
           <div class="topbar-brand">
             <span class="topbar-dot"></span>
             <span class="topbar-name">pr-stats</span>
-            <span class="topbar-sep">/</span>
-            <nav class="metric-tabs" id="metric-tabs" aria-label="Metric"></nav>
           </div>
         </header>
 
         <div class="card-body">
-          <h1 id="page-title"></h1>
-          <p class="subtitle" id="subtitle"></p>
+          <h1>Pull Request Stats</h1>
+          <p class="subtitle">
+            All metrics are measured from when a PR becomes ready for review —
+            to its first review, first approval, and merge —
+            <strong>excluding weekends</strong> (Saturdays and Sundays, UTC).
+          </p>
 
           <div id="controls" class="controls hidden">
             <div class="control">
@@ -49,6 +51,25 @@
                     stroke-linejoin="round"
                   ></path>
                 </svg>
+              </div>
+            </div>
+
+            <div class="control">
+              <span class="control-label">Aggregate</span>
+              <div
+                class="segmented"
+                id="aggregate-control"
+                role="radiogroup"
+                aria-label="Aggregate"
+              >
+                <label>
+                  <input type="radio" name="aggregate" value="mean" checked />
+                  <span>Mean</span>
+                </label>
+                <label>
+                  <input type="radio" name="aggregate" value="median" />
+                  <span>Median</span>
+                </label>
               </div>
             </div>
 
@@ -75,10 +96,15 @@
               <span class="chart-caption" id="chart-caption"></span>
               <div class="legend">
                 <span class="legend-item">
-                  <span class="legend-swatch legend-swatch--median"></span>Median
+                  <span class="legend-swatch legend-swatch--first-review"></span
+                  >First review
                 </span>
                 <span class="legend-item">
-                  <span class="legend-swatch legend-swatch--mean"></span>Mean
+                  <span class="legend-swatch legend-swatch--approval"></span
+                  >Approval
+                </span>
+                <span class="legend-item">
+                  <span class="legend-swatch legend-swatch--merge"></span>Merge
                 </span>
               </div>
             </div>

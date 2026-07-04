@@ -9,16 +9,18 @@
  * (`./stats.ts`), so changing the threshold or toggling a category never
  * refetches. All URLs are relative, so the site works hosted under a subpath.
  *
- * The page shows ONE metric at a time, chosen via the topbar switcher (see
- * `METRICS`). A computed stats result carries every metric's per-month bucket,
- * so switching metrics is a pure re-render of the already-computed data.
+ * The page shows ALL metrics at once — one chart line and one table column per
+ * metric, in pipeline order (see `METRICS`). Whether the MEDIAN or the MEAN is
+ * displayed is a user setting (default mean); a computed stats result carries
+ * both aggregates in every metric bucket, so toggling is a pure re-render of
+ * the already-computed data.
  *
  * Flow:
- *   - On load, build the metric switcher, then fetch the repo index and
- *     populate the selector (auto-selecting the first). If there are none, show
- *     a friendly message.
+ *   - On load, fetch the repo index and populate the selector (auto-selecting
+ *     the first). If there are none, show a friendly message.
  *   - On repo change, fetch that repo's rows (or reuse the cache) and recompute.
- *   - On metric change, re-render the computed stats against the new bucket.
+ *   - On aggregate change, re-render the computed stats against the new
+ *     aggregate.
  *   - On threshold or category change, recompute locally and re-render.
  *
  * The window is derived from `new Date()` at view time, while the data is only
@@ -32,8 +34,8 @@
  *
  * Units: median/mean are computed as SECONDS. On the chart's y-axis they are
  * plotted in HOURS (seconds / 3600) for legible axis numbers; tooltips show the
- * full human-readable duration via formatDuration. Count is not charted; it
- * appears only in the table.
+ * full human-readable duration via formatDuration. The PR count is not charted;
+ * it appears in the table and the tooltip footer.
  */
 
 import Chart from "./chart.umd.js";
@@ -56,71 +58,46 @@ type MetricKey = "timeToMerge" | "timeToFirstReview" | "timeToApproval";
 
 interface MetricDescriptor {
   key: MetricKey;
-  slug: string;
-  title: string;
-  caption: string;
-  subtitle: string;
-  outlierNoun: string;
+  /** Legend / table-column / tooltip label. */
+  label: string;
+  /** Line color; mirrored by the legend swatch vars in styles.css. */
+  color: string;
 }
 
 /**
- * The metrics the UI can display, in switcher order. Each entry is the page
- * chrome for one metric plus `key`, the name of its bucket in every month of a
- * stats result ({median, mean, excludedCount}). The whole page renders ONE
- * selected metric at a time; switching only swaps which bucket is read, so it is
- * a pure re-render — the computed result already carries every metric's bucket.
+ * The metrics the UI displays, in pipeline order (a PR is first reviewed, then
+ * approved, then merged). Every metric renders at once — one chart line, one
+ * table column, one tooltip row each; `key` names its bucket in every month of
+ * a stats result ({median, mean}).
  *
  * Adding a metric is a one-entry edit here (plus the matching bucket in the
- * stats pipeline): the topbar switcher, title, subtitle, chart caption, and
- * outlier footnote all derive from this list.
+ * stats pipeline and a legend item in index.html): the chart datasets, table
+ * columns, and tooltip rows all derive from this list.
  */
 const METRICS: readonly MetricDescriptor[] = [
-  {
-    key: "timeToMerge",
-    slug: "time-to-merge",
-    title: "Time-to-Merge",
-    caption: "Time to merge · hours",
-    subtitle:
-      "Time to merge is measured from when a PR is ready for review to when it merges, <strong>excluding weekends</strong> (Saturdays and Sundays, UTC).",
-    outlierNoun: "time-to-merge",
-  },
-  {
-    key: "timeToFirstReview",
-    slug: "time-to-first-review",
-    title: "Time-to-First-Review",
-    caption: "Time to first review · hours",
-    subtitle:
-      "Time to first review is measured from when a PR is ready for review to its first review, <strong>excluding weekends</strong> (Saturdays and Sundays, UTC).",
-    outlierNoun: "time-to-first-review",
-  },
-  {
-    key: "timeToApproval",
-    slug: "time-to-approval",
-    title: "Time-to-Approval",
-    caption: "Time to approval · hours",
-    subtitle:
-      "Time to approval is measured from when a PR is ready for review to its first approval, <strong>excluding weekends</strong> (Saturdays and Sundays, UTC).",
-    outlierNoun: "time-to-approval",
-  },
+  { key: "timeToFirstReview", label: "First review", color: "#0f9464" },
+  { key: "timeToApproval", label: "Approval", color: "#d9480f" },
+  { key: "timeToMerge", label: "Merge", color: "#3d63dd" },
 ];
 
-/** Look up a metric descriptor by its bucket key. */
-function metricByKey(key: MetricKey): MetricDescriptor {
-  return METRICS.find((m) => m.key === key) ?? METRICS[0]!;
-}
+/** The two aggregates every metric bucket carries; the UI shows one at a time. */
+type Aggregate = "median" | "mean";
 
 // ---- Settings persistence ---------------------------------------------------
 
 /**
- * The control selections (metric, repo, threshold, and the set of unchecked
+ * The control selections (aggregate, repo, threshold, and the set of unchecked
  * categories) are mirrored to localStorage under one key so they survive a page
  * reload. Reads/writes are wrapped in try/catch: a disabled or corrupt store
- * degrades silently to defaults rather than throwing.
+ * degrades silently to defaults rather than throwing. Keys from older builds
+ * (e.g. the tabbed UI's `metric`) may linger in the stored object; they are
+ * simply ignored.
  */
 const STORAGE_KEY = "pr-stats:ui";
 
 interface SavedSettings {
-  metric?: string;
+  /** `"median"` or `"mean"`; anything else is ignored on restore. */
+  aggregate?: string;
   /** Repo slug (`owner/repo`). Older builds stored a numeric DB id; the repo
    * restore guard treats such stale values as "not found". */
   repo?: string;
@@ -151,8 +128,8 @@ function saveSettings(patch: SavedSettings): void {
 
 // ---- Module state -----------------------------------------------------------
 
-/** The currently selected metric's bucket key (defaults to the first metric). */
-let selectedMetric: MetricKey = METRICS[0]!.key;
+/** The aggregate currently displayed for every metric. */
+let selectedAggregate: Aggregate = "mean";
 
 /**
  * Currently included categories as a Set of category names. null until the
@@ -178,12 +155,10 @@ let lastThresholdDays = DEFAULT_OUTLIER_THRESHOLD_DAYS;
 // ---- DOM refs ---------------------------------------------------------------
 
 const els = {
-  metricTabs: document.getElementById("metric-tabs")!,
-  pageTitle: document.getElementById("page-title")!,
-  subtitle: document.getElementById("subtitle")!,
   chartCaption: document.getElementById("chart-caption")!,
   controls: document.getElementById("controls")!,
   repoSelect: document.getElementById("repo-select") as HTMLSelectElement,
+  aggregateControl: document.getElementById("aggregate-control")!,
   categoryFilterControl: document.getElementById("category-filter-control")!,
   categoryFilter: document.getElementById("category-filter")!,
   outlierThreshold: document.getElementById("outlier-threshold") as HTMLInputElement,
@@ -195,53 +170,42 @@ const els = {
   generatedAt: document.getElementById("generated-at")!,
 };
 
-// Colors for the median / mean lines.
-const PALETTE = [
-  "#3d63dd", // blue (median)
-  "#d9480f", // red (mean)
-];
-
-// Light fill under the median line (PALETTE[0] at 7% opacity).
-const MEDIAN_AREA = "rgba(61, 99, 221, 0.07)";
-
 // Monospace family for all canvas-rendered text, matching the surrounding UI.
 const MONO_FONT =
   "'IBM Plex Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace";
 
 // ---- Helpers ----------------------------------------------------------------
 
-/** Render a metric value (seconds for median/mean) as a table cell string. */
-function formatCell(metric: string, value: number | null | undefined): string {
+/** Render a duration value (seconds) as a table cell string. */
+function formatCell(value: number | null | undefined): string {
   if (value === null || value === undefined) return BLANK;
-  if (metric === "count") return String(value);
   return formatDuration(value);
 }
 
-/** Convert a metric value to a numeric chart point (null stays null = gap). */
-function chartValue(metric: string, value: number | null | undefined): number | null {
+/** Convert a duration to a chart point in hours (null stays null = gap). */
+function chartValue(value: number | null | undefined): number | null {
   if (value === null || value === undefined) return null;
-  if (metric === "count") return value;
   return value / SECONDS_PER_HOUR; // seconds -> hours
 }
 
-/** Build a tooltip label for a metric value. */
+/** Build a tooltip label for one metric's value. */
 function tooltipLabel(
-  metric: string,
   datasetLabel: string,
   rawSeconds: number | null | undefined,
 ): string {
   if (rawSeconds === null || rawSeconds === undefined) {
     return `${datasetLabel}: ${BLANK}`;
   }
-  if (metric === "count") {
-    return `${datasetLabel}: ${rawSeconds} PRs`;
-  }
   return `${datasetLabel}: ${formatDuration(rawSeconds)}`;
 }
 
 // ---- Rendering: tables ------------------------------------------------------
 
-/** Render the table: 12 month rows x count / median / mean. */
+/**
+ * Render the table: 12 month rows x PRs + one column per metric (showing the
+ * selected aggregate). `PRs` is the number of PRs feeding the metrics — the
+ * month's merged total minus its outliers.
+ */
 function renderTable(stats: StatsResult): void {
   const thead = els.table.tHead!;
   const tbody = els.table.tBodies[0]!;
@@ -249,20 +213,18 @@ function renderTable(stats: StatsResult): void {
   tbody.innerHTML = "";
 
   const headRow = thead.insertRow();
-  for (const h of ["Month", "Count", "Median", "Mean"]) {
+  for (const h of ["Month", "PRs", ...METRICS.map((m) => m.label)]) {
     const th = document.createElement("th");
     th.textContent = h;
     headRow.appendChild(th);
   }
 
   for (const m of stats.monthly) {
-    const bucket = m[selectedMetric];
     const row = tbody.insertRow();
     const cells = [
       m.month,
-      String(m.count - bucket.excludedCount),
-      formatCell("median", bucket.median),
-      formatCell("mean", bucket.mean),
+      String(m.count - m.excludedCount),
+      ...METRICS.map((metric) => formatCell(m[metric.key][selectedAggregate])),
     ];
     cells.forEach((text, i) => {
       const cell = i === 0 ? document.createElement("th") : row.insertCell();
@@ -332,13 +294,13 @@ function ensureChart(): any {
   return chart;
 }
 
-/** Chart: median & mean lines (hours). Count is NOT drawn. */
+/**
+ * Chart: one line per metric (hours), showing the selected aggregate. The PR
+ * count is NOT drawn; it appears in the tooltip footer. No line gets an area
+ * fill — a fill under one of three peer lines would falsely emphasize it.
+ */
 function renderChart(stats: StatsResult): void {
   const c = ensureChart();
-  const labels = stats.months;
-
-  const medianRaw = stats.monthly.map((m) => m[selectedMetric].median);
-  const meanRaw = stats.monthly.map((m) => m[selectedMetric].mean);
 
   // Shared marker styling: a white dot with a colored ring, per the design.
   const point = {
@@ -349,131 +311,75 @@ function renderChart(stats: StatsResult): void {
     pointHoverBorderWidth: 1.75,
   };
 
-  c.data.labels = labels;
-  c.data.datasets = [
-    {
-      label: "Median",
-      data: medianRaw.map((v) => chartValue("median", v)),
-      _raw: medianRaw,
-      _metric: "median",
-      borderColor: PALETTE[0],
-      backgroundColor: MEDIAN_AREA,
-      pointBorderColor: PALETTE[0],
-      borderWidth: 2.25,
-      tension: 0,
-      fill: "origin", // subtle area under the median line
-      ...point,
-    },
-    {
-      label: "Mean",
-      data: meanRaw.map((v) => chartValue("mean", v)),
-      _raw: meanRaw,
-      _metric: "mean",
-      borderColor: PALETTE[1],
-      backgroundColor: PALETTE[1],
-      pointBorderColor: PALETTE[1],
+  c.data.labels = stats.months;
+  c.data.datasets = METRICS.map((metric) => {
+    const raw = stats.monthly.map((m) => m[metric.key][selectedAggregate]);
+    return {
+      label: metric.label,
+      data: raw.map(chartValue),
+      _raw: raw,
+      borderColor: metric.color,
+      backgroundColor: metric.color,
+      pointBorderColor: metric.color,
       borderWidth: 2.25,
       tension: 0,
       fill: false,
       ...point,
-    },
-  ];
+    };
+  });
 
   const cb = c.options.plugins.tooltip.callbacks;
   cb.label = (ctx: any) => {
     const ds = ctx.dataset;
-    return tooltipLabel(ds._metric, ds.label, ds._raw[ctx.dataIndex]);
+    return tooltipLabel(ds.label, ds._raw[ctx.dataIndex]);
   };
-  // Render the tooltip swatch in the line color (not the faint area fill).
+  // Render the tooltip swatch in the line color.
   cb.labelColor = (ctx: any) => ({
     borderColor: ctx.dataset.borderColor,
     backgroundColor: ctx.dataset.borderColor,
     borderRadius: 2,
   });
-  // Footer: the PR count for the hovered month.
+  // Footer: the number of PRs feeding the hovered month's metrics.
   cb.footer = (items: any[]) => {
     const i = items[0]?.dataIndex;
     if (i === undefined) return "";
     const m = stats.monthly[i]!;
-    return `${m.count - m[selectedMetric].excludedCount} PRs`;
+    return `${m.count - m.excludedCount} PRs`;
   };
   c.update();
 }
 
-// ---- Metric chrome ----------------------------------------------------------
+// ---- Aggregate setting --------------------------------------------------------
 
 /**
- * Build the topbar metric switcher once, one button per metric. Clicking a
- * button selects that metric and re-renders from the already-computed stats (no
- * recompute — every metric's bucket is already present). Segments are separated
- * by a muted dot to read as a path inside the terminal topbar.
+ * Switch the displayed aggregate and re-render. Ignores a no-op reselect. Both
+ * aggregates are already present in every computed bucket, so this never
+ * recomputes or refetches.
  */
-function buildMetricTabs(): void {
-  els.metricTabs.innerHTML = "";
-  METRICS.forEach((metric, i) => {
-    if (i > 0) {
-      const sep = document.createElement("span");
-      sep.className = "metric-tab-sep";
-      sep.textContent = "·";
-      sep.setAttribute("aria-hidden", "true");
-      els.metricTabs.appendChild(sep);
-    }
-    const btn = document.createElement("button");
-    btn.type = "button";
-    btn.className = "metric-tab";
-    btn.dataset.metric = metric.key;
-    btn.textContent = metric.slug;
-    btn.addEventListener("click", () => selectMetric(metric.key));
-    els.metricTabs.appendChild(btn);
-  });
-}
-
-/** Switch the displayed metric and re-render. Ignores a no-op reselect. */
-function selectMetric(key: MetricKey): void {
-  if (key === selectedMetric) return;
-  selectedMetric = key;
-  saveSettings({ metric: key });
-  applyMetricChrome();
+function selectAggregate(aggregate: Aggregate): void {
+  if (aggregate === selectedAggregate) return;
+  selectedAggregate = aggregate;
+  saveSettings({ aggregate });
   render();
-}
-
-/**
- * Update the page chrome that depends on the selected metric: the active topbar
- * tab, the title, the subtitle, and the chart caption. Independent of any data,
- * so it is safe to call before the first data load.
- */
-function applyMetricChrome(): void {
-  const metric = metricByKey(selectedMetric);
-  for (const btn of els.metricTabs.querySelectorAll(".metric-tab")) {
-    btn.setAttribute(
-      "aria-pressed",
-      (btn as HTMLElement).dataset.metric === selectedMetric ? "true" : "false",
-    );
-  }
-  els.pageTitle.textContent = metric.title;
-  els.subtitle.innerHTML = metric.subtitle;
-  els.chartCaption.textContent = metric.caption;
 }
 
 // ---- Top-level render -------------------------------------------------------
 
-/** Render the table + chart from the latest computed stats. */
+/** Render the caption + table + chart + footnote from the latest computed stats. */
 function render(): void {
   if (!currentStats) return;
 
+  els.chartCaption.textContent =
+    selectedAggregate === "mean" ? "Mean time · hours" : "Median time · hours";
   renderTable(currentStats);
   renderChart(currentStats);
 
-  const metric = metricByKey(selectedMetric);
-  const ex = currentStats.monthly.reduce(
-    (s, m) => s + m[selectedMetric].excludedCount,
-    0,
-  );
+  const ex = currentStats.monthly.reduce((s, m) => s + m.excludedCount, 0);
   const days = lastThresholdDays;
   const exPr = ex === 1 ? "PR was" : "PRs were";
   const dayLabel = days === 1 ? "day" : "days";
   els.footnote.textContent =
-    `${ex} ${exPr} excluded as outliers (${metric.outlierNoun} over ${days} ${dayLabel}).`;
+    `${ex} ${exPr} excluded as outliers (time to merge over ${days} ${dayLabel}).`;
 }
 
 // ---- Data loading & local recompute ------------------------------------------
@@ -572,18 +478,15 @@ async function init(): Promise<void> {
   // Restore persisted selections (defaults to {} if nothing/invalid is stored).
   const saved = loadSettings();
 
-  // Restore the metric before applying chrome, guarding against a stale key
-  // from a since-removed metric.
-  if (saved.metric && METRICS.some((m) => m.key === saved.metric)) {
-    selectedMetric = saved.metric as MetricKey;
+  // Restore the aggregate, guarding against anything but the two valid values,
+  // and reflect it in the radio group (whose markup defaults to mean).
+  if (saved.aggregate === "median" || saved.aggregate === "mean") {
+    selectedAggregate = saved.aggregate;
   }
-
-  // Build the metric switcher and apply the (possibly restored) metric's chrome
-  // up front, so the topbar, title, and subtitle are populated even on the
-  // empty / error states (the switcher itself depends only on the static
-  // METRICS list).
-  buildMetricTabs();
-  applyMetricChrome();
+  const aggregateRadio = els.aggregateControl.querySelector<HTMLInputElement>(
+    `input[value="${selectedAggregate}"]`,
+  );
+  if (aggregateRadio) aggregateRadio.checked = true;
 
   let index: ReposFile;
   try {
@@ -628,10 +531,18 @@ async function init(): Promise<void> {
   els.controls.classList.remove("hidden");
 
   // Wire up controls. Only a repo change can fetch (once per repo); threshold
-  // and category changes recompute locally from the rows already in hand.
+  // and category changes recompute locally from the rows already in hand, and
+  // an aggregate change is a pure re-render.
   els.repoSelect.addEventListener("change", () => {
     saveSettings({ repo: els.repoSelect.value });
     showRepo(els.repoSelect.value);
+  });
+
+  els.aggregateControl.addEventListener("change", () => {
+    const checked = els.aggregateControl.querySelector<HTMLInputElement>(
+      "input:checked",
+    );
+    if (checked) selectAggregate(checked.value as Aggregate);
   });
 
   els.outlierThreshold.addEventListener("change", () => {
