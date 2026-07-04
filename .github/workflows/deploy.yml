@@ -1,0 +1,51 @@
+name: Deploy PR stats
+
+on:
+  schedule:
+    - cron: "0 5 * * 1" # Mondays 05:00 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    env:
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+
+      - run: bun install --frozen-lockfile
+
+      # The DB is rebuilt from scratch on every run: register each repo
+      # (defaults to a ~12-month backfill from today), then sync it. A full
+      # backfill for all repos costs ~150 GraphQL points, well under the
+      # GITHUB_TOKEN budget of 1,000 points/hour.
+      - name: Fetch PR data
+        run: |
+          for repo in vaadin/flow vaadin/flow-components vaadin/web-components; do
+            bun run src/index.ts add "$repo"
+            bun run src/index.ts sync "$repo"
+          done
+
+      - name: Generate static site
+        run: bun run src/index.ts generate --minify
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: dist
+
+      - id: deployment
+        uses: actions/deploy-pages@v4
