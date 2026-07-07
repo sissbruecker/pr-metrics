@@ -328,6 +328,16 @@ input[type="number"] {
   height: 380px;
 }
 
+/* The companion PR-count panel: a shorter context chart directly below the
+   time chart, sharing its x-axis (month labels render only down here). */
+.chart-header--count {
+  margin: 10px 0 4px;
+}
+
+.chart-wrap--count {
+  height: 110px;
+}
+
 /* ---- Table ---- */
 
 .table-scroll {

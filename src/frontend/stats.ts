@@ -68,7 +68,7 @@ export const SECONDS_PER_DAY = 86400;
  * counts toward the month's `count`). The UI seeds its threshold input with
  * this and recomputes locally when the user overrides it.
  */
-export const DEFAULT_OUTLIER_THRESHOLD_DAYS = 7;
+export const DEFAULT_OUTLIER_THRESHOLD_DAYS = 5;
 
 /**
  * One metric's stats for a single month. Median/mean are over the non-null

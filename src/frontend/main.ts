@@ -28,14 +28,20 @@
  * bottom of the page so a stale deployment explains itself rather than
  * mysteriously showing empty recent months.
  *
- * Chart handling: a single Chart.js instance is created once and then mutated
- * (data + options replaced, `chart.update()`) on every render, rather than
- * destroyed/recreated, to keep it cheap and flicker-free.
+ * Chart handling: two Chart.js instances — the time chart and the PR-count
+ * panel below it — are each created once and then mutated (data + options
+ * replaced, `chart.update()`) on every render, rather than destroyed/
+ * recreated, to keep it cheap and flicker-free. The panels share the monthly
+ * x-axis: both pin their y-axis to the same fixed width and lay their marks
+ * out at the same category centers, so months align vertically across the two
+ * plots; the month tick labels render only on the bottom (count) panel.
  *
- * Units: median/mean are computed as SECONDS. On the chart's y-axis they are
- * plotted in HOURS (seconds / 3600) for legible axis numbers; tooltips show the
- * full human-readable duration via formatDuration. The PR count is not charted;
- * it appears in the table and the tooltip footer.
+ * Units: median/mean are computed as SECONDS. On the time chart's y-axis they
+ * are plotted in HOURS (seconds / 3600) for legible axis numbers; tooltips
+ * show the full human-readable duration via formatDuration. The count panel
+ * plots the PRs feeding the metrics (the month's merged total minus its
+ * outliers) — the same number the table's PRs column and the time chart's
+ * tooltip footer show.
  */
 
 import Chart from "./chart.umd.js";
@@ -79,6 +85,22 @@ const METRICS: readonly MetricDescriptor[] = [
   { key: "timeToApproval", label: "Approval", color: "#d9480f" },
   { key: "timeToMerge", label: "Merge", color: "#3d63dd" },
 ];
+
+/**
+ * The count panel's bar fill (rest + hover). Deliberately a muted neutral,
+ * clearly outside the three metric hues, so the count reads as context rather
+ * than a fourth duration metric. Single series — no legend; the panel caption
+ * in index.html names it.
+ */
+const COUNT_BAR_COLOR = "#aab3c0";
+const COUNT_BAR_HOVER_COLOR = "#8b95a5";
+
+/**
+ * Fixed y-axis width shared by both charts. Chart.js sizes a y-axis to its
+ * tick labels, so the two plots' left edges would drift apart; pinning both
+ * axes to one width keeps the panels' months vertically aligned.
+ */
+const Y_AXIS_WIDTH = 56;
 
 /** The two aggregates every metric bucket carries; the UI shows one at a time. */
 type Aggregate = "median" | "mean";
@@ -143,8 +165,10 @@ let currentRows: StatsRow[] | null = null;
 const rowsBySlug = new Map<string, StatsRow[]>();
 /** Latest computed stats for the selected repo + filters, or null. */
 let currentStats: StatsResult | null = null;
-/** The single Chart.js instance, created lazily. */
+/** The time chart's Chart.js instance, created lazily. */
 let chart: any = null;
+/** The PR-count panel's Chart.js instance, created lazily. */
+let countChart: any = null;
 /**
  * Last valid outlier threshold (in days). The cap is shared by every metric.
  * Initialized to the default and updated as the user edits the input; used both
@@ -165,6 +189,7 @@ const els = {
   emptyMessage: document.getElementById("empty-message")!,
   report: document.getElementById("report")!,
   canvas: document.getElementById("chart") as HTMLCanvasElement,
+  countCanvas: document.getElementById("count-chart") as HTMLCanvasElement,
   table: document.getElementById("data-table") as HTMLTableElement,
   footnote: document.getElementById("footnote")!,
   generatedAt: document.getElementById("generated-at")!,
@@ -239,7 +264,34 @@ function renderTable(stats: StatsResult): void {
 
 // ---- Rendering: chart -------------------------------------------------------
 
-/** Ensure the single Chart.js instance exists. */
+/** Tooltip styling shared by both charts: the dark floating panel. */
+function tooltipOptions(): any {
+  return {
+    backgroundColor: "#14161a",
+    titleColor: "#ffffff",
+    titleFont: { family: MONO_FONT, size: 12.5, weight: "600" },
+    bodyColor: "#ffffff",
+    bodyFont: { family: MONO_FONT, size: 11.5 },
+    bodySpacing: 6,
+    footerColor: "#7e848e",
+    footerFont: { family: MONO_FONT, size: 11, weight: "400" },
+    footerMarginTop: 8,
+    padding: 12,
+    cornerRadius: 7,
+    boxWidth: 11,
+    boxHeight: 3,
+    boxPadding: 4,
+    usePointStyle: false,
+    callbacks: {},
+  };
+}
+
+/** Pin a y-axis to the shared fixed width (see Y_AXIS_WIDTH). */
+function pinAxisWidth(scale: any): void {
+  scale.width = Y_AXIS_WIDTH;
+}
+
+/** Ensure the time chart's Chart.js instance exists. */
 function ensureChart(): any {
   if (chart) return chart;
   chart = new Chart(els.canvas.getContext("2d"), {
@@ -250,6 +302,49 @@ function ensureChart(): any {
       maintainAspectRatio: false,
       interaction: { mode: "index", intersect: false },
       spanGaps: false, // null values render as gaps
+      scales: {
+        x: {
+          // The count panel's bars sit at category centers (bar charts offset
+          // the x scale); offsetting here too puts the line points on those
+          // same centers so months align across the two plots. The month
+          // labels render only on the bottom panel.
+          offset: true,
+          grid: { display: false },
+          border: { color: "#c9cdd3", width: 1.25 },
+          ticks: { display: false },
+        },
+        y: {
+          beginAtZero: true,
+          grid: { color: "#eceef0", drawTicks: false },
+          border: { display: false },
+          ticks: {
+            color: "#8b919c",
+            font: { family: MONO_FONT, size: 11 },
+            padding: 8,
+          },
+          afterFit: pinAxisWidth,
+        },
+      },
+      plugins: {
+        // The legend lives in the HTML chart header, not on the canvas.
+        legend: { display: false },
+        tooltip: tooltipOptions(),
+      },
+    },
+  });
+  return chart;
+}
+
+/** Ensure the PR-count panel's Chart.js instance exists. */
+function ensureCountChart(): any {
+  if (countChart) return countChart;
+  countChart = new Chart(els.countCanvas.getContext("2d"), {
+    type: "bar",
+    data: { labels: [], datasets: [] },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      interaction: { mode: "index", intersect: false },
       scales: {
         x: {
           grid: { display: false },
@@ -264,40 +359,28 @@ function ensureChart(): any {
             color: "#8b919c",
             font: { family: MONO_FONT, size: 11 },
             padding: 8,
+            // The short panel fits few gridlines, and counts are integers.
+            maxTicksLimit: 4,
+            precision: 0,
           },
+          afterFit: pinAxisWidth,
         },
       },
       plugins: {
-        // The legend lives in the HTML chart header, not on the canvas.
+        // Single series: the panel caption names it, so no legend.
         legend: { display: false },
-        tooltip: {
-          backgroundColor: "#14161a",
-          titleColor: "#ffffff",
-          titleFont: { family: MONO_FONT, size: 12.5, weight: "600" },
-          bodyColor: "#ffffff",
-          bodyFont: { family: MONO_FONT, size: 11.5 },
-          bodySpacing: 6,
-          footerColor: "#7e848e",
-          footerFont: { family: MONO_FONT, size: 11, weight: "400" },
-          footerMarginTop: 8,
-          padding: 12,
-          cornerRadius: 7,
-          boxWidth: 11,
-          boxHeight: 3,
-          boxPadding: 4,
-          usePointStyle: false,
-          callbacks: {},
-        },
+        tooltip: tooltipOptions(),
       },
     },
   });
-  return chart;
+  return countChart;
 }
 
 /**
- * Chart: one line per metric (hours), showing the selected aggregate. The PR
- * count is NOT drawn; it appears in the tooltip footer. No line gets an area
- * fill — a fill under one of three peer lines would falsely emphasize it.
+ * Time chart: one line per metric (hours), showing the selected aggregate. The
+ * PR count is drawn in the companion panel below (renderCountChart) and echoed
+ * in this chart's tooltip footer. No line gets an area fill — a fill under one
+ * of three peer lines would falsely emphasize it.
  */
 function renderChart(stats: StatsResult): void {
   const c = ensureChart();
@@ -349,6 +432,45 @@ function renderChart(stats: StatsResult): void {
   c.update();
 }
 
+/**
+ * Count panel: one bar per month of the PRs feeding the metrics (the month's
+ * merged total minus its outliers), the same number as the table's PRs column.
+ * A month's excluded outliers are noted in the tooltip footer.
+ */
+function renderCountChart(stats: StatsResult): void {
+  const c = ensureCountChart();
+
+  c.data.labels = stats.months;
+  c.data.datasets = [
+    {
+      label: "PRs",
+      data: stats.monthly.map((m) => m.count - m.excludedCount),
+      backgroundColor: COUNT_BAR_COLOR,
+      hoverBackgroundColor: COUNT_BAR_HOVER_COLOR,
+      borderRadius: 4, // rounded data-end; the baseline end stays square
+      maxBarThickness: 26,
+    },
+  ];
+
+  const cb = c.options.plugins.tooltip.callbacks;
+  cb.label = (ctx: any) => `${ctx.parsed.y} PRs`;
+  // Render the tooltip swatch in the bar color.
+  cb.labelColor = () => ({
+    borderColor: COUNT_BAR_COLOR,
+    backgroundColor: COUNT_BAR_COLOR,
+    borderRadius: 2,
+  });
+  // Footer: how many of the month's merged PRs were dropped as outliers.
+  cb.footer = (items: any[]) => {
+    const i = items[0]?.dataIndex;
+    if (i === undefined) return "";
+    const ex = stats.monthly[i]!.excludedCount;
+    if (ex === 0) return "";
+    return `+${ex} excluded as ${ex === 1 ? "outlier" : "outliers"}`;
+  };
+  c.update();
+}
+
 // ---- Aggregate setting --------------------------------------------------------
 
 /**
@@ -365,7 +487,7 @@ function selectAggregate(aggregate: Aggregate): void {
 
 // ---- Top-level render -------------------------------------------------------
 
-/** Render the caption + table + chart + footnote from the latest computed stats. */
+/** Render the caption + table + both charts + footnote from the latest computed stats. */
 function render(): void {
   if (!currentStats) return;
 
@@ -373,6 +495,7 @@ function render(): void {
     selectedAggregate === "mean" ? "Mean time · hours" : "Median time · hours";
   renderTable(currentStats);
   renderChart(currentStats);
+  renderCountChart(currentStats);
 
   const ex = currentStats.monthly.reduce((s, m) => s + m.excludedCount, 0);
   const days = lastThresholdDays;
